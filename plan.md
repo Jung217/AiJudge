@@ -27,10 +27,15 @@
 
 ### 3.1 資料來源
 
-- **主來源**：司法院開放資料平台，每月批次 ZIP 下載
-  - API：`https://opendata.judicial.gov.tw/api/FilesetLists/{id}/file`
-  - 初始 ID 範圍：**63694–64055**（約 362 個月度檔）
-- **輔來源**：裁判書查詢系統（補當月未釋出資料）
+- **主來源**：司法院開放資料平台，每月批次 **RAR** 下載（非 ZIP）
+  - 下載 API：`https://opendata.judicial.gov.tw/api/FilesetLists/{fileSetId}/file`
+  - 目錄 API：`https://opendata.judicial.gov.tw/api/Datasets?Keyword=裁判書&Page={n}`（回 JSON、無挑戰）
+  - 初始 ID 範圍：**63694–64055**（約 362 個月度檔，對應 1996-01 ~ 2026-03）
+  - 每個 fileSetId 對應一個月度 `{YYYYMM}裁判書.rar`，內含全國各法院 JSON 記錄
+- **⚠ 機器人挑戰**：下載端被 F5 BIG-IP ASM + Cloudflare Turnstile 保護。純 requests 恆回 500；須先以 Playwright / Selenium 載入首頁取得 `TS…` cookie，再回注 session 方可下載。目錄 API 無此限制。
+- **輔來源**：
+  - JDoc REST API（`data.judicial.gov.tw/jdg/api/*`）需註冊帳號 + 僅 00:00–06:00 開放
+  - 裁判書查詢系統（補當月未釋出資料）
 
 ### 3.2 記錄欄位
 
@@ -164,8 +169,8 @@
 每一次預測後強制校驗：
 
 1. **法定刑上下限檢查**：依 (behavior, drug_level, law_version) 查表
-2. **減刑規則**：§17Ⅰ、§17Ⅱ、§59 各自減半，按刑法§70 遞減
-3. **累犯加重**：刑法§47 + 憲判字 1 號個案審酌
+2. **減刑規則**：§17Ⅰ、§17Ⅱ、§59 各自將上下限均乘以 1/2（刑法§66 減輕其刑「至二分之一」），按§70 遞減
+3. **累犯加重**：刑法§47 — 僅加重**上限**（×1.5，不超過 30 年），下限不變。此設計為釋字 775 後之比例原則：若同時適用§17 減刑與累犯，強制提高下限將使兩制度衝突
 4. **刑法§51 合併定刑**：`max(個刑) ≤ 合併刑 ≤ min(sum(個刑), 30 年)`
 
 ### 5.4 年份權重
@@ -319,8 +324,10 @@ AiJudge/
 
 ## 13. 立即可行步驟
 
-1. `python scripts/01_download.py --start 63694 --end 63700` — 先抓 7 個月試水
-2. `python scripts/02_filter.py` — 看基隆毒品案量
-3. `python scripts/03_explore.py` — 計算類別分布、刑期分布
-4. 擴大下載至完整 `63694–64055` 範圍
-5. 人工標註 100 筆，驗證特徵抽取器
+0. `python scripts/00_demo.py` — 以合成資料驗證 filter → features → rules 整條 pipeline（**已通過**）
+1. 以 Playwright 自動化首頁載入，取得 TS cookie 後注入 `fetcher.make_session(cookie_jar=…)`
+2. 安裝 `rarfile` 並確認 `unrar.exe` 或 `7z.exe` 在 PATH 上
+3. `python scripts/01_download.py --start 63694 --end 63700` — 先抓 7 個月試水
+4. `python scripts/02_filter.py` → `python scripts/03_explore.py`
+5. 擴大下載至完整 `63694–64055` 範圍
+6. 人工標註 100 筆，驗證特徵抽取器

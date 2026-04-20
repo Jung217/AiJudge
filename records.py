@@ -1,11 +1,14 @@
-"""Parse downloaded judicial opendata ZIPs into record dicts.
+"""Parse downloaded judicial opendata archives into record dicts.
 
-The opendata ZIPs may contain JSON files in several shapes:
+Archives arrive as RAR (司法院 uses .rar format; see fetcher.py). Legacy ZIPs
+may also appear. Record payloads come in several JSON shapes:
   - one large JSON array
-  - one JSON object per file (with fields)
+  - one JSON object per file
   - JSONL / NDJSON
 
-We handle all three defensively since the exact layout isn't guaranteed stable.
+For RAR support, install `rarfile` and make `unrar` or `7z` available on PATH
+(on Windows, WinRAR's unrar.exe or 7-Zip's 7z.exe both work). If `rarfile` is
+absent, ZIP and JSONL paths still work and we surface a clear error for RAR.
 """
 from __future__ import annotations
 
@@ -15,6 +18,13 @@ import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterator
+
+try:
+    import rarfile  # type: ignore
+    _HAS_RAR = True
+except ImportError:
+    rarfile = None  # type: ignore
+    _HAS_RAR = False
 
 logger = logging.getLogger(__name__)
 
@@ -74,7 +84,6 @@ def _parse_json_bytes(raw: bytes, source_tag: str) -> list[dict]:
         except json.JSONDecodeError:
             pass
 
-    # JSONL fallback
     out: list[dict] = []
     for line in text.splitlines():
         line = line.strip()
@@ -89,8 +98,8 @@ def _parse_json_bytes(raw: bytes, source_tag: str) -> list[dict]:
     return out
 
 
-def iter_records(zip_path: Path) -> Iterator[Record]:
-    """Yield records from one monthly ZIP."""
+def iter_records_zip(zip_path: Path) -> Iterator[Record]:
+    """Yield records from a ZIP."""
     source = zip_path.name
     try:
         zf = zipfile.ZipFile(zip_path)
@@ -100,8 +109,7 @@ def iter_records(zip_path: Path) -> Iterator[Record]:
 
     with zf:
         for name in zf.namelist():
-            lower = name.lower()
-            if not lower.endswith((".json", ".jsonl", ".ndjson")):
+            if not name.lower().endswith((".json", ".jsonl", ".ndjson")):
                 continue
             try:
                 with zf.open(name) as fh:
@@ -109,13 +117,71 @@ def iter_records(zip_path: Path) -> Iterator[Record]:
             except (zipfile.BadZipFile, RuntimeError) as e:
                 logger.warning("extract fail %s/%s: %s", source, name, e)
                 continue
-
             for data in _parse_json_bytes(raw, f"{source}/{name}"):
                 yield Record.from_dict(data, source=source)
 
 
-def iter_records_dir(zip_dir: Path) -> Iterator[Record]:
-    """Iterate records across all ZIPs in a directory."""
-    paths = sorted(zip_dir.glob("*.zip"))
-    for zip_path in paths:
-        yield from iter_records(zip_path)
+def iter_records_rar(rar_path: Path) -> Iterator[Record]:
+    """Yield records from a RAR (requires `rarfile` + unrar/7z binary)."""
+    if not _HAS_RAR:
+        raise RuntimeError(
+            f"RAR file {rar_path.name} but `rarfile` not installed. "
+            "Run: pip install rarfile  (and ensure unrar or 7z is on PATH)"
+        )
+    source = rar_path.name
+    try:
+        rf = rarfile.RarFile(rar_path)
+    except rarfile.Error as e:
+        logger.error("bad rar %s: %s", source, e)
+        return
+
+    with rf:
+        for name in rf.namelist():
+            if not name.lower().endswith((".json", ".jsonl", ".ndjson")):
+                continue
+            try:
+                with rf.open(name) as fh:
+                    raw = fh.read()
+            except rarfile.Error as e:
+                logger.warning("extract fail %s/%s: %s", source, name, e)
+                continue
+            for data in _parse_json_bytes(raw, f"{source}/{name}"):
+                yield Record.from_dict(data, source=source)
+
+
+def iter_records_jsonl(jsonl_path: Path) -> Iterator[Record]:
+    """Yield records from a plain JSONL (one record object per line)."""
+    source = jsonl_path.name
+    with jsonl_path.open(encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                data = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(data, dict):
+                yield Record.from_dict(data, source=source)
+
+
+def iter_records(archive_path: Path) -> Iterator[Record]:
+    """Dispatch by extension."""
+    ext = archive_path.suffix.lower()
+    if ext == ".zip":
+        yield from iter_records_zip(archive_path)
+    elif ext == ".rar":
+        yield from iter_records_rar(archive_path)
+    elif ext in (".jsonl", ".ndjson"):
+        yield from iter_records_jsonl(archive_path)
+    else:
+        logger.warning("unsupported archive extension: %s", archive_path)
+
+
+def iter_records_dir(archive_dir: Path) -> Iterator[Record]:
+    """Iterate records across all .zip/.rar/.jsonl files in a directory."""
+    paths: list[Path] = []
+    for ext in ("*.zip", "*.rar", "*.jsonl", "*.ndjson"):
+        paths.extend(archive_dir.glob(ext))
+    for p in sorted(paths):
+        yield from iter_records(p)

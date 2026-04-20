@@ -60,8 +60,12 @@ def apply_reductions(
 ) -> SentencingConstraint:
     """Apply statutory reductions and recidivism enhancement.
 
-    刑法§70: each 減輕其刑 halves the range (both min and max).
-    Multiple reductions compound multiplicatively per §70.
+    刑法§66: 有期徒刑減輕其刑「至二分之一」— the reduced range has both
+    lower and upper bounds scaled by 1/2.
+    刑法§70: multiple reductions compound (each ×1/2).
+    刑法§47 + 釋字775: 累犯加重「至二分之一」enhances the *upper* bound only;
+    the lower bound stays untouched to allow proportionality (otherwise
+    a reduced §17 case combined with 累犯 would have an impossibly high floor).
     """
     lo, hi = base.min_months, base.max_months
 
@@ -73,7 +77,6 @@ def apply_reductions(
     hi *= reduction_factor
 
     if recidivism:
-        lo = min(lo * 1.5, MAX_FIXED_TERM_MONTHS)
         hi = min(hi * 1.5, MAX_FIXED_TERM_MONTHS)
 
     # Once reduced, life/capital options do not auto-apply
