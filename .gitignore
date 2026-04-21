@@ -18,6 +18,8 @@ data/extracted/
 data/filtered/
 data/processed/
 data/models/
+data/labeling/
+data/logs/
 !data/.gitkeep
 
 # Notebooks

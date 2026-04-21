@@ -88,13 +88,28 @@ def main() -> int:
                 candidates.append(jid)
     logger.info("keelung-prefix candidates: %d", len(candidates))
 
+    # JList returns a rolling 7-day window, so consecutive runs overlap.
+    # Dedupe by reading JIDs already saved before appending.
+    seen_jids: set[str] = set()
+    if args.out.exists():
+        with args.out.open(encoding="utf-8") as fh:
+            for line in fh:
+                try:
+                    seen_jids.add(json.loads(line).get("jid", ""))
+                except json.JSONDecodeError:
+                    continue
+    logger.info("existing output: %d JIDs (skipping overlap)", len(seen_jids))
+
+    candidates = [j for j in candidates if j not in seen_jids]
+    logger.info("new candidates after dedup: %d", len(candidates))
+
     if args.dry_run:
         for jid in candidates:
             print(jid)
         return 0
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
-    written = 0
+    written = skipped = 0
     with args.out.open("a", encoding="utf-8") as fh:
         for r in client.iter_documents(candidates, delay=args.delay):
             if not is_keelung(r):
@@ -105,6 +120,10 @@ def main() -> int:
                 continue
             if not is_first_instance_guilty(r):
                 continue
+            if r.jid in seen_jids:   # defense in depth
+                skipped += 1
+                continue
+            seen_jids.add(r.jid)
             fh.write(json.dumps({
                 "jid": r.jid, "jyear": r.jyear, "jcase": r.jcase, "jno": r.jno,
                 "jdate": r.jdate, "jtitle": r.jtitle, "jfull": r.jfull,
@@ -112,7 +131,8 @@ def main() -> int:
             }, ensure_ascii=False) + "\n")
             written += 1
 
-    print(f"appended {written} Keelung drug cases to {args.out}")
+    print(f"appended {written} new Keelung drug cases to {args.out} "
+          f"(skipped {skipped} duplicates)")
     return 0
 
 
