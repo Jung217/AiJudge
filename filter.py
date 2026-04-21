@@ -13,6 +13,12 @@ KEELUNG_COURT_NAMES = (
     "台灣基隆地方法院",
 )
 
+# JID prefix = court + division code. All 基隆地方法院 entries start with "KL".
+# e.g. KLDM (刑事庭), KLDS, KLEM, KLHM, KLDV, KLEV, etc.
+# This is the primary filter — jfull substring check was leaking cases that
+# merely *referenced* 基隆 (e.g. a Yunlin case citing a prior Keelung ruling).
+KEELUNG_JID_PREFIXES = ("KL",)
+
 DRUG_KEYWORDS = (
     "毒品危害防制條例",
     "毒品",
@@ -60,7 +66,11 @@ def _extract_main_text(jfull: str) -> str:
 
 
 def is_keelung(record: Record) -> bool:
-    head = record.jfull[:400]
+    if record.jid and not any(record.jid.startswith(p) for p in KEELUNG_JID_PREFIXES):
+        return False
+    # Defensive secondary check — court name must appear very early (header),
+    # not just anywhere in the body.
+    head = record.jfull[:150]
     return any(name in head for name in KEELUNG_COURT_NAMES)
 
 

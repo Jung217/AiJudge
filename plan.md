@@ -32,10 +32,18 @@
   - 目錄 API：`https://opendata.judicial.gov.tw/api/Datasets?Keyword=裁判書&Page={n}`（回 JSON、無挑戰）
   - 初始 ID 範圍：**63694–64055**（約 362 個月度檔，對應 1996-01 ~ 2026-03）
   - 每個 fileSetId 對應一個月度 `{YYYYMM}裁判書.rar`，內含全國各法院 JSON 記錄
-- **⚠ 機器人挑戰**：下載端被 F5 BIG-IP ASM + Cloudflare Turnstile 保護。純 requests 恆回 500；須先以 Playwright / Selenium 載入首頁取得 `TS…` cookie，再回注 session 方可下載。目錄 API 無此限制。
-- **輔來源**：
-  - JDoc REST API（`data.judicial.gov.tw/jdg/api/*`）需註冊帳號 + 僅 00:00–06:00 開放
-  - 裁判書查詢系統（補當月未釋出資料）
+- **⚠ 下載端點狀態**（2026-04 實測）：
+  - `/api/FilesetLists/{id}/file` 對**所有** fileSetId（含最新的 64055）皆回 500 `{"succeeded":false,"message":"Entity \"GetFilesetListFileQuery\" (N) was not found."}`
+  - 即使用 Playwright + 真實 Chromium + 首頁 + dataset 頁 + TS cookie，結果相同
+  - `/api/Datasets/{id}` 亦同。推測為**伺服器端 CQRS handler 目前失效**，非 client-side bot defense
+  - 目錄 API `/api/Datasets?Keyword=裁判書` **正常**可枚舉所有 fileSetId
+  - 建議：直接聯絡司法院資訊處 (<itsupport@judicial.gov.tw>) 或透過 JDoc 備援 API
+- **輔來源**（當前首選）：
+  - **JDoc REST API**（`data.judicial.gov.tw/jdg/api/*`）
+    - 僅 **7 天滾動**資料，非歷史批次
+    - 需註冊帳號 + 僅 00:00–06:00 開放
+    - 適合**增量**同步，不適合**回填**
+  - 裁判書查詢系統（人工補當月未釋出資料）
 
 ### 3.2 記錄欄位
 
@@ -324,10 +332,13 @@ AiJudge/
 
 ## 13. 立即可行步驟
 
-0. `python scripts/00_demo.py` — 以合成資料驗證 filter → features → rules 整條 pipeline（**已通過**）
-1. 以 Playwright 自動化首頁載入，取得 TS cookie 後注入 `fetcher.make_session(cookie_jar=…)`
-2. 安裝 `rarfile` 並確認 `unrar.exe` 或 `7z.exe` 在 PATH 上
-3. `python scripts/01_download.py --start 63694 --end 63700` — 先抓 7 個月試水
-4. `python scripts/02_filter.py` → `python scripts/03_explore.py`
-5. 擴大下載至完整 `63694–64055` 範圍
-6. 人工標註 100 筆，驗證特徵抽取器
+0. ✅ `python scripts/00_demo.py` — pipeline 端到端（合成資料，通過）
+1. ✅ **真實資料已驗證**（2026-01 + 2026-02 二個月 RAR）：
+   - 解壓：Windows 內建 `bsdtar`（`C:\Windows\System32\tar.exe`）原生支援 RAR
+   - 過濾：50 基隆毒品案（KL prefix 過濾，排除 Yunlin/Shilin 洩漏）
+   - 特徵：100% 刑期覆蓋（43 有期徒刑 + 7 拘役），82 件行為偵測、58 件毒品級別偵測
+2. ⏳ **JDoc 備援（帳號已驗）**：00:00–06:00 期間執行 `python scripts/04_jdoc_sync.py` 增量同步
+3. ⏳ **歷史回填**：待司法院修復 `/api/FilesetLists/{id}/file`（目前回 500），或使用者批次手動下載
+4. ⏳ 人工標註 100 筆驗證特徵抽取器
+5. ⏳ LLM (Claude API) 抽取 §57 量刑因子
+6. ⏳ 擴大至北部 5 地院資料 → 建立基礎模型

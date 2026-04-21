@@ -22,6 +22,7 @@ Catalog enumeration (works without challenge):
 """
 from __future__ import annotations
 
+import json
 import logging
 import time
 from pathlib import Path
@@ -42,6 +43,14 @@ DEFAULT_UA = (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def load_cookies_json(path: Path = Path(".cookies.json")) -> dict:
+    """Load cookies exported by `scripts/prime_cookies.py`."""
+    if not path.exists():
+        return {}
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    return {c["name"]: c["value"] for c in raw if isinstance(c, dict)}
 
 
 def make_session(cookie_jar: dict | None = None) -> requests.Session:

@@ -33,7 +33,7 @@ _CN_NUM: dict[str, int] = {
     "零": 0, "○": 0, "〇": 0,
     "一": 1, "二": 2, "三": 3, "四": 4, "五": 5,
     "六": 6, "七": 7, "八": 8, "九": 9,
-    "壹": 1, "貳": 2, "參": 3, "肆": 4, "伍": 5,
+    "壹": 1, "貳": 2, "參": 3, "叁": 3, "肆": 4, "伍": 5,
     "陸": 6, "柒": 7, "捌": 8, "玖": 9,
     "十": 10, "拾": 10,
     "百": 100, "佰": 100,
@@ -92,7 +92,8 @@ class CaseFeatures:
     recidivism: bool = False        # 刑法§47 累犯
 
     # Labels
-    sentence_months: Optional[int] = None
+    sentence_months: Optional[int] = None       # 有期徒刑 月數
+    detention_days: Optional[int] = None        # 拘役 日數（施用/持有輕案常見）
     probation_months: Optional[int] = None
     fine_ntd: Optional[int] = None               # TODO v2
     can_convert_to_fine: bool = False
@@ -150,6 +151,9 @@ _SENTENCE_RE = re.compile(
 _PROBATION_RE = re.compile(
     rf"緩\s*刑\s*(?P<years>[{_CN_CHARS}\d]+)\s*年"
 )
+_DETENTION_RE = re.compile(
+    rf"處\s*拘\s*役\s*(?P<days>[{_CN_CHARS}\d]+)\s*日"
+)
 
 
 def _any_match(patterns: tuple[str, ...], text: str) -> bool:
@@ -166,15 +170,21 @@ def _find_behaviors(text: str) -> list[str]:
 
 
 def _extract_section(jfull: str, start_marker: str, end_patterns: tuple[str, ...]) -> str:
-    idx = jfull.find(start_marker)
-    if idx < 0:
+    """Extract text between a labelled start and any matching end pattern.
+
+    Tolerates whitespace (ASCII or full-width U+3000) between characters of
+    the start marker — real judgments commonly write "主　文", "事　實", etc.
+    """
+    start_re = r"\s*".join(re.escape(c) for c in start_marker)
+    m = re.search(start_re, jfull)
+    if not m:
         return ""
-    tail = jfull[idx + len(start_marker):]
+    tail = jfull[m.end():]
     end_idx = len(tail)
     for pat in end_patterns:
-        m = re.search(pat, tail)
-        if m and m.start() < end_idx:
-            end_idx = m.start()
+        em = re.search(pat, tail)
+        if em and em.start() < end_idx:
+            end_idx = em.start()
     return tail[:end_idx]
 
 
@@ -203,6 +213,13 @@ def _extract_probation_months(main_text: str) -> Optional[int]:
     return y * 12 if y else None
 
 
+def _extract_detention_days(main_text: str) -> Optional[int]:
+    m = _DETENTION_RE.search(main_text)
+    if not m:
+        return None
+    return _cn_to_int(m.group("days"))
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -211,17 +228,34 @@ def extract_features(record: Record) -> CaseFeatures:
     jfull = record.jfull
 
     main_text = _extract_section(jfull, "主文",
-                                  (r"犯\s*罪\s*事\s*實", r"事\s*實", r"理\s*由"))
-    facts_text = _extract_section(jfull, "犯罪事實",
-                                   (r"證\s*據", r"理\s*由"))
-    if not facts_text:
-        facts_text = _extract_section(jfull, "事實", (r"證\s*據", r"理\s*由"))
-    reason_text = _extract_section(jfull, "理由",
-                                    (r"附.{0,3}表", r"中\s*華\s*民\s*國"))
+                                  (r"犯\s*罪\s*事\s*實", r"事\s*實\s*及\s*理\s*由",
+                                   r"事\s*實", r"理\s*由"))
 
-    # Fall back to full text if sections failed to split
-    text_for_facts = facts_text or jfull
-    text_for_reason = reason_text or jfull
+    # 簡易判決 uses compound "事實及理由" header (breaks naive "事實" lookup because
+    # the end-pattern "理由" matches immediately inside the header itself). Try
+    # the compound form first, then fall back to separate 通常判決 sections.
+    # Minimum-length gate catches near-empty extractions that leaked before.
+    MIN_LEN = 50
+    facts_text = _extract_section(
+        jfull, "事實及理由",
+        (r"中\s*華\s*民\s*國\s*\d{3}", r"附\s*錄", r"書\s*記\s*官"),
+    )
+    if len(facts_text) < MIN_LEN:
+        facts_text = _extract_section(jfull, "犯罪事實",
+                                       (r"\n\s*理\s*由", r"證\s*據\s*清\s*單"))
+    if len(facts_text) < MIN_LEN:
+        facts_text = _extract_section(jfull, "事實", (r"\n\s*理\s*由",))
+
+    reason_text = _extract_section(
+        jfull, "事實及理由",
+        (r"中\s*華\s*民\s*國\s*\d{3}", r"書\s*記\s*官"),
+    )
+    if len(reason_text) < MIN_LEN:
+        reason_text = _extract_section(jfull, "理由",
+                                        (r"附.{0,3}表", r"中\s*華\s*民\s*國\s*\d{3}"))
+
+    text_for_facts = facts_text if len(facts_text) >= MIN_LEN else jfull
+    text_for_reason = reason_text if len(reason_text) >= MIN_LEN else jfull
 
     return CaseFeatures(
         jid=record.jid,
@@ -234,6 +268,7 @@ def extract_features(record: Record) -> CaseFeatures:
         self_surrender=_any_match(_ART62_PATTERNS, text_for_reason),
         recidivism=_any_match(_ART47_PATTERNS, text_for_reason),
         sentence_months=_extract_sentence_months(main_text),
+        detention_days=_extract_detention_days(main_text),
         probation_months=_extract_probation_months(main_text),
         can_convert_to_fine="易科罰金" in main_text,
     )

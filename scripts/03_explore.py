@@ -39,6 +39,7 @@ def main() -> int:
     art59 = 0
     probation = 0
     sentences: list[int] = []
+    detentions: list[int] = []
 
     with args.inp.open(encoding="utf-8") as fh:
         for line in fh:
@@ -68,6 +69,8 @@ def main() -> int:
                 probation += 1
             if feats.sentence_months:
                 sentences.append(feats.sentence_months)
+            if feats.detention_days:
+                detentions.append(feats.detention_days)
 
     print(f"Total cases:              {total}")
     if total == 0:
@@ -89,12 +92,23 @@ def main() -> int:
     if sentences:
         sentences.sort()
         n = len(sentences)
-        print(f"\nSentence (months), n={n}:")
+        print(f"\n有期徒刑 (months), n={n}:")
         print(f"  p25    = {sentences[n // 4]}")
         print(f"  median = {sentences[n // 2]}")
         print(f"  p75    = {sentences[3 * n // 4]}")
         print(f"  mean   = {sum(sentences) / n:.1f}")
         print(f"  max    = {sentences[-1]}")
+
+    if detentions:
+        detentions.sort()
+        n = len(detentions)
+        print(f"\n拘役 (days), n={n}:")
+        print(f"  median = {detentions[n // 2]}")
+        print(f"  mean   = {sum(detentions) / n:.1f}")
+        print(f"  max    = {detentions[-1]}")
+
+    covered = len(sentences) + len(detentions)
+    print(f"\nsentence coverage: {covered}/{total} ({covered/total:.1%})")
 
     return 0
 
