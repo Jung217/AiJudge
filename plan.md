@@ -37,13 +37,9 @@
   - 即使用 Playwright + 真實 Chromium + 首頁 + dataset 頁 + TS cookie，結果相同
   - `/api/Datasets/{id}` 亦同。推測為**伺服器端 CQRS handler 目前失效**，非 client-side bot defense
   - 目錄 API `/api/Datasets?Keyword=裁判書` **正常**可枚舉所有 fileSetId
-  - 建議：直接聯絡司法院資訊處 (<itsupport@judicial.gov.tw>) 或透過 JDoc 備援 API
-- **輔來源**（當前首選）：
-  - **JDoc REST API**（`data.judicial.gov.tw/jdg/api/*`）
-    - 僅 **7 天滾動**資料，非歷史批次
-    - 需註冊帳號 + 僅 00:00–06:00 開放
-    - 適合**增量**同步，不適合**回填**
-  - 裁判書查詢系統（人工補當月未釋出資料）
+  - 建議：直接聯絡司法院資訊處 (<itsupport@judicial.gov.tw>) 或人工以瀏覽器下載 RAR
+- **資料進件路徑**：使用者以瀏覽器下載月度 RAR 到 `data/raw/`；`records.iter_records_rar` 以 Windows 內建 bsdtar 解壓讀取
+- **輔來源**：裁判書查詢系統（人工補當月未釋出資料）
 
 ### 3.2 記錄欄位
 
@@ -337,8 +333,7 @@ AiJudge/
    - 解壓：Windows 內建 `bsdtar`（`C:\Windows\System32\tar.exe`）原生支援 RAR
    - 過濾：50 基隆毒品案（KL prefix 過濾，排除 Yunlin/Shilin 洩漏）
    - 特徵：100% 刑期覆蓋（43 有期徒刑 + 7 拘役），82 件行為偵測、58 件毒品級別偵測
-2. ⏳ **JDoc 備援（帳號已驗）**：00:00–06:00 期間執行 `python scripts/04_jdoc_sync.py` 增量同步
-3. ⏳ **歷史回填**：待司法院修復 `/api/FilesetLists/{id}/file`（目前回 500），或使用者批次手動下載
-4. ⏳ 人工標註 100 筆驗證特徵抽取器
-5. ⏳ LLM (Claude API) 抽取 §57 量刑因子
-6. ⏳ 擴大至北部 5 地院資料 → 建立基礎模型
+2. ⏳ **資料回填**：使用者以瀏覽器手動下載 RAR 至 `data/raw/`（server API 500 未修復）
+3. ⏳ 人工標註 100 筆驗證特徵抽取器（已有 `scripts/05_sample_for_labeling.py` + `06_evaluate_labels.py`）
+4. ⏳ LLM (Claude API) 抽取 §57 量刑因子（scaffold 在 `scripts/07_llm_extract_factors.py`，待 API key + 標註資料）
+5. ⏳ 擴大至北部 5 地院資料 → 建立基礎模型
