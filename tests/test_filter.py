@@ -69,6 +69,13 @@ def test_sheng_case_rejected():
     assert not is_first_instance_guilty(r)
 
 
+def test_jianshang_rejected_second_instance():
+    # 簡上 = 簡易判決上訴，地院第二審合議庭；不可與原 基簡 雙算
+    r = _rec(jcase="簡上",
+             jfull="臺灣基隆地方法院刑事判決\n主文\n原判決撤銷。\n甲○○施用第二級毒品，處有期徒刑3月。")
+    assert not is_first_instance_guilty(r)
+
+
 def test_pipeline_end_to_end():
     keelung_guilty = _rec(
         jid="KLDM,112,訴,1,20230101,1",
