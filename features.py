@@ -105,14 +105,31 @@ class CaseFeatures:
 # Pattern tables
 # ---------------------------------------------------------------------------
 
-_ART17_1_PATTERNS = (
-    r"毒品危害防制條例\s*第\s*(?:十七|17)\s*條\s*第\s*(?:一|1)\s*項",
-    r"供出毒品來源[^。]*?(?:因而|進而)\s*查獲",
+# §17 detection: a citation must co-occur with a reduction-application verb
+# in the same local window, with no rejection markers nearby.
+#
+# Pure factual confession patterns ("於偵查及審理均自白") are NOT used as a
+# standalone trigger — they over-fire on:
+#   1. Statute recitals quoting the literal text of §17Ⅱ
+#   2. §10/§11 (施用/持有) cases where defendant confessed but §17Ⅱ is
+#      categorically inapplicable (it only governs §4-§8 acts)
+# When §17Ⅱ is genuinely applied, the article is virtually always cited.
+_ART17_1_CITATION = re.compile(
+    r"(?:毒品危害防制)?條例\s*第\s*(?:十七|17)\s*條\s*第\s*(?:一|1)\s*項"
 )
-_ART17_2_PATTERNS = (
-    r"毒品危害防制條例\s*第\s*(?:十七|17)\s*條\s*第\s*(?:二|2)\s*項",
-    r"偵查[^。]*?審判[^。]*?均[^。]*?自白",
+_ART17_2_CITATION = re.compile(
+    r"(?:毒品危害防制)?條例\s*第\s*(?:十七|17)\s*條\s*第\s*(?:二|2)\s*項"
 )
+# Rejection markers that indicate §17 was *not* applied:
+#   - 不符/不適用/未予 etc. — explicit non-application
+#   - (雖|並|均)無...之適用 — alternative phrasing
+#   - 改口/嗣後/矢口否認 — defendant retracted confession at trial
+_ART17_REJECT = re.compile(
+    r"不符|未[符能達及]|難認|無從|無法|(?:雖|並|均)\s*無|不適用"
+    r"|無[^。，]{0,40}?之?適用"  # 無...之適用 / 無...規定適用
+    r"|不予[適減以]|未予|改口|嗣[後改]|矢口否認"
+)
+_ART17_APPLY = re.compile(r"減輕|遞減|減其刑")
 _ART59_PATTERNS = (
     r"刑法\s*第\s*(?:五十九|59)\s*條",
     r"情[輕堪]憫恕",
@@ -158,6 +175,50 @@ _DETENTION_RE = re.compile(
 
 def _any_match(patterns: tuple[str, ...], text: str) -> bool:
     return any(re.search(p, text) for p in patterns)
+
+
+# Recital indicators — the citation is quoting the statute rather than
+# applying it. These appear in preambles like "按犯第4條至第8條之罪...，
+# 毒品危害防制條例第17條第2項定有明文。" before the judge reaches a finding.
+#   pre:  "按…犯第[四4]條" — literal opening of §17Ⅱ's statute text
+#   post: "規定：「" / "定有明文" / "明定" — quotation/proclamation markers
+# Bare "按" alone is intentionally not matched (too broad).
+_ART17_RECITAL_PRE = re.compile(
+    r"按\s*[^。]{0,15}?犯第\s*(?:[四4]|四)\s*條"
+)
+_ART17_RECITAL_POST = re.compile(r"^\s*(?:規定[：「:]|定有明文|明定)")
+
+
+def _check_art17(text: str, citation_re: re.Pattern[str]) -> bool:
+    """Return True iff §17 reduction was actually applied to this defendant.
+
+    For each citation occurrence:
+      1. Skip if the citation is part of a statute recital (preamble before
+         the judge reaches the actual finding).
+      2. Bound the analysis window to the surrounding *sentence* (text
+         between the previous and next 句號 markers, fallback ±80 chars).
+         Sentence-scoped windows prevent §17Ⅰ rejections in adjacent
+         sentences from poisoning the §17Ⅱ check (and vice-versa).
+      3. Require a reduction-application verb (減輕/遞減/減其刑) in the
+         sentence and reject if a rejection marker appears.
+    """
+    for m in citation_re.finditer(text):
+        before_close = text[max(0, m.start() - 15): m.start()]
+        after_close = text[m.end(): m.end() + 15]
+        if _ART17_RECITAL_PRE.search(before_close) or _ART17_RECITAL_POST.match(after_close):
+            continue
+        # Sentence-scoped window: clip to nearest 句號 in each direction.
+        prev_p = text.rfind("。", max(0, m.start() - 120), m.start())
+        next_p = text.find("。", m.end(), m.end() + 120)
+        win_start = (prev_p + 1) if prev_p >= 0 else max(0, m.start() - 80)
+        win_end = next_p if next_p >= 0 else min(len(text), m.end() + 80)
+        window = text[win_start:win_end]
+        if not _ART17_APPLY.search(window):
+            continue
+        if _ART17_REJECT.search(window):
+            continue
+        return True
+    return False
 
 
 def _find_drug_levels(text: str) -> list[int]:
@@ -257,16 +318,19 @@ def extract_features(record: Record) -> CaseFeatures:
     text_for_facts = facts_text if len(facts_text) >= MIN_LEN else jfull
     text_for_reason = reason_text if len(reason_text) >= MIN_LEN else jfull
 
+    # Statutory citations and reduction phrases can appear in 主文, 事實, or 理由
+    # depending on judgment style — search the whole document rather than gating
+    # on a possibly-misextracted section.
     return CaseFeatures(
         jid=record.jid,
         jdate=record.jdate,
         drug_levels=_find_drug_levels(text_for_facts),
         behaviors=_find_behaviors(text_for_facts),
-        art17_1_applied=_any_match(_ART17_1_PATTERNS, text_for_reason),
-        art17_2_applied=_any_match(_ART17_2_PATTERNS, text_for_reason),
-        art59_applied=_any_match(_ART59_PATTERNS, text_for_reason),
-        self_surrender=_any_match(_ART62_PATTERNS, text_for_reason),
-        recidivism=_any_match(_ART47_PATTERNS, text_for_reason),
+        art17_1_applied=_check_art17(jfull, _ART17_1_CITATION),
+        art17_2_applied=_check_art17(jfull, _ART17_2_CITATION),
+        art59_applied=_any_match(_ART59_PATTERNS, jfull),
+        self_surrender=_any_match(_ART62_PATTERNS, jfull),
+        recidivism=_any_match(_ART47_PATTERNS, jfull),
         sentence_months=_extract_sentence_months(main_text),
         detention_days=_extract_detention_days(main_text),
         probation_months=_extract_probation_months(main_text),
