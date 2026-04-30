@@ -149,14 +149,22 @@ _DRUG_LEVEL_PATTERNS: dict[int, tuple[str, ...]] = {
     4: (r"第[四4]級毒品",),
 }
 
+# Behavior patterns tolerate whitespace (including line breaks and U+3000)
+# between every char — judgment text often wraps mid-word, e.g. "毒\n品".
+# 禁藥 is included as an alternative target for 轉讓 (per 藥事法 §83 charges
+# that get §17Ⅱ relief via case-law extension).
+_DRUG_TARGET = r"(?:毒\s*品|禁\s*藥)"
 _BEHAVIOR_PATTERNS: dict[str, tuple[str, ...]] = {
-    "販賣": (r"販\s*賣(?:第[一二三四1-4]級)?毒品", r"販賣.{0,3}予"),
-    "施用": (r"施\s*用(?:第[一二三四1-4]級)?毒品",),
-    "持有": (r"持\s*有(?:第[一二三四1-4]級)?毒品",),
-    "運輸": (r"運\s*輸(?:第[一二三四1-4]級)?毒品",),
-    "轉讓": (r"轉\s*讓(?:第[一二三四1-4]級)?毒品",),
-    "製造": (r"製\s*造(?:第[一二三四1-4]級)?毒品",),
-    "意圖販賣而持有": (r"意圖販賣而持有.{0,6}毒品",),
+    "販賣": (
+        rf"販\s*賣(?:\s*第\s*[一二三四1-4]\s*級)?\s*{_DRUG_TARGET}",
+        r"販\s*賣.{0,3}予",
+    ),
+    "施用": (rf"施\s*用(?:\s*第\s*[一二三四1-4]\s*級)?\s*{_DRUG_TARGET}",),
+    "持有": (rf"持\s*有(?:\s*第\s*[一二三四1-4]\s*級)?\s*{_DRUG_TARGET}",),
+    "運輸": (rf"運\s*輸(?:\s*第\s*[一二三四1-4]\s*級)?\s*{_DRUG_TARGET}",),
+    "轉讓": (rf"轉\s*讓(?:\s*第\s*[一二三四1-4]\s*級)?\s*{_DRUG_TARGET}",),
+    "製造": (rf"製\s*造(?:\s*第\s*[一二三四1-4]\s*級)?\s*{_DRUG_TARGET}",),
+    "意圖販賣而持有": (rf"意\s*圖\s*販\s*賣\s*而\s*持\s*有.{{0,6}}{_DRUG_TARGET}",),
 }
 
 _SENTENCE_RE = re.compile(
@@ -318,14 +326,18 @@ def extract_features(record: Record) -> CaseFeatures:
     text_for_facts = facts_text if len(facts_text) >= MIN_LEN else jfull
     text_for_reason = reason_text if len(reason_text) >= MIN_LEN else jfull
 
+    # 主文 carries the formal conviction phrasing ("犯販賣第二級毒品罪"); for
+    # 轉讓禁藥 (藥事法 §83) cases the offense name appears only there. Search
+    # both 主文 and 事實 for behaviors / drug levels.
+    behavior_text = main_text + "\n" + text_for_facts
     # Statutory citations and reduction phrases can appear in 主文, 事實, or 理由
     # depending on judgment style — search the whole document rather than gating
     # on a possibly-misextracted section.
     return CaseFeatures(
         jid=record.jid,
         jdate=record.jdate,
-        drug_levels=_find_drug_levels(text_for_facts),
-        behaviors=_find_behaviors(text_for_facts),
+        drug_levels=_find_drug_levels(behavior_text),
+        behaviors=_find_behaviors(behavior_text),
         art17_1_applied=_check_art17(jfull, _ART17_1_CITATION),
         art17_2_applied=_check_art17(jfull, _ART17_2_CITATION),
         art59_applied=_any_match(_ART59_PATTERNS, jfull),
