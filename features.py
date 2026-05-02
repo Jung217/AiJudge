@@ -130,9 +130,18 @@ _ART17_REJECT = re.compile(
     r"|不予[適減以]|未予|改口|嗣[後改]|矢口否認"
 )
 _ART17_APPLY = re.compile(r"減輕|遞減|減其刑")
-_ART59_PATTERNS = (
-    r"刑法\s*第\s*(?:五十九|59)\s*條",
-    r"情[輕堪]憫恕",
+# §59 detection: same citation+window strategy as §17. The bare cite was
+# matching釋字 775 boilerplate ("於不符合刑法第59條所定要件之情形下..."),
+# rejection clauses ("雖無刑法第59條...適用餘地"), and case-law recitations.
+_ART59_CITATION = re.compile(r"刑\s*法\s*第\s*(?:五十九|59)\s*條")
+# Recital indicator unique to §59: 釋字 775 explanation references §59 to
+# describe what would happen *if* it applied — never an actual application.
+_ART59_RECITAL = re.compile(r"釋\s*字\s*第?\s*775|司法院\s*大?\s*法官\s*釋\s*字")
+_ART59_APPLY = re.compile(r"減輕|遞減|減其刑|酌減|酌量\s*減")
+_ART59_REJECT = re.compile(
+    r"不符|未[符能達及]|難認|無從|無法|(?:雖|並|均|仍|卻)\s*無"
+    r"|不適用|無[^。，]{0,40}?之?適用|無\s*[^。，]{0,30}?\s*餘\s*地"
+    r"|不予[適減以]|未予"
 )
 _ART62_PATTERNS = (
     r"刑法\s*第\s*(?:六十二|62)\s*條",
@@ -195,6 +204,31 @@ _ART17_RECITAL_PRE = re.compile(
     r"按\s*[^。]{0,15}?犯第\s*(?:[四4]|四)\s*條"
 )
 _ART17_RECITAL_POST = re.compile(r"^\s*(?:規定[：「:]|定有明文|明定)")
+
+
+def _check_art59(text: str) -> bool:
+    """Return True iff §59 reduction was actually applied to this defendant.
+
+    Same shape as _check_art17:
+      1. Skip if 釋字 775 boilerplate is in the same sentence.
+      2. Sentence-scoped window (clip to nearest 句號).
+      3. Require a reduction-application verb.
+      4. Reject on rejection markers (不符, 雖無...適用, etc.).
+    """
+    for m in _ART59_CITATION.finditer(text):
+        prev_p = text.rfind("。", max(0, m.start() - 120), m.start())
+        next_p = text.find("。", m.end(), m.end() + 120)
+        win_start = (prev_p + 1) if prev_p >= 0 else max(0, m.start() - 80)
+        win_end = next_p if next_p >= 0 else min(len(text), m.end() + 80)
+        window = text[win_start:win_end]
+        if _ART59_RECITAL.search(window):
+            continue
+        if not _ART59_APPLY.search(window):
+            continue
+        if _ART59_REJECT.search(window):
+            continue
+        return True
+    return False
 
 
 def _check_art17(text: str, citation_re: re.Pattern[str]) -> bool:
@@ -340,7 +374,7 @@ def extract_features(record: Record) -> CaseFeatures:
         behaviors=_find_behaviors(behavior_text),
         art17_1_applied=_check_art17(jfull, _ART17_1_CITATION),
         art17_2_applied=_check_art17(jfull, _ART17_2_CITATION),
-        art59_applied=_any_match(_ART59_PATTERNS, jfull),
+        art59_applied=_check_art59(jfull),
         self_surrender=_any_match(_ART62_PATTERNS, jfull),
         recidivism=_any_match(_ART47_PATTERNS, jfull),
         sentence_months=_extract_sentence_months(main_text),
