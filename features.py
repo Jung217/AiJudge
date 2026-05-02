@@ -182,6 +182,23 @@ _SENTENCE_RE = re.compile(
     r"\s*"
     rf"(?:(?P<months>[{_CN_CHARS}\d]+)\s*(?:個)?月)?"
 )
+# 應執行有期徒刑 (multi-罪併罰 aggregate sentence) — when present, this is
+# the actual term the defendant serves and should be preferred over individual
+# "處有期徒刑" verdicts. e.g.:
+#   "甲犯施用..., 處有期徒刑3月; 又犯..., 處有期徒刑4月. 應執行有期徒刑伍月."
+_AGGREGATE_SENTENCE_RE = re.compile(
+    r"應\s*執\s*行\s*(?:有\s*期\s*徒\s*刑)?\s*"
+    rf"(?:(?P<years>[{_CN_CHARS}\d]+)\s*年)?"
+    r"\s*"
+    rf"(?:(?P<months>[{_CN_CHARS}\d]+)\s*(?:個)?月)?"
+)
+# Multi-defendant boundary detector: a Chinese name (1-4 chars; not a
+# continuation marker like 又/再) followed by a verb-of-conviction. Used to
+# decide whether an 應執行 belongs to the *first* defendant or a later one.
+_DEFENDANT_BOUNDARY_RE = re.compile(
+    r"。\s*(?![又再而並亦])[一-龥○Ａ-Ｚ\d]{1,5}\s*"
+    r"(?:犯|共同|意圖|施用|販賣|轉讓|運輸|製造|持有|幫助)"
+)
 _PROBATION_RE = re.compile(
     rf"緩\s*刑\s*(?P<years>[{_CN_CHARS}\d]+)\s*年"
 )
@@ -204,6 +221,16 @@ _ART17_RECITAL_PRE = re.compile(
     r"按\s*[^。]{0,15}?犯第\s*(?:[四4]|四)\s*條"
 )
 _ART17_RECITAL_POST = re.compile(r"^\s*(?:規定[：「:]|定有明文|明定)")
+# Conditional/hypothetical sentence opener — "倘/苟/若 被告/行為人..."
+# These describe what *would* happen if the rule applied, not actual finding.
+_ART17_CONDITIONAL = re.compile(
+    r"(?:倘|苟|若)\s*[被行]"
+)
+# Case-law citation context — when the cite sits in a sentence explaining
+# legal precedent (with 判決意旨 / 裁定意旨 / 判例 references), it's
+# typically a procedural rule explanation rather than an actual application
+# to this defendant.
+_ART17_CASELAW = re.compile(r"判\s*決\s*意\s*旨|裁\s*定\s*意\s*旨|判\s*例")
 
 
 def _check_art59(text: str) -> bool:
@@ -255,6 +282,12 @@ def _check_art17(text: str, citation_re: re.Pattern[str]) -> bool:
         win_start = (prev_p + 1) if prev_p >= 0 else max(0, m.start() - 80)
         win_end = next_p if next_p >= 0 else min(len(text), m.end() + 80)
         window = text[win_start:win_end]
+        # Skip hypothetical clauses ("倘被告...", "若行為人...")
+        if _ART17_CONDITIONAL.search(window):
+            continue
+        # Skip case-law-citation contexts (procedural rule explanation)
+        if _ART17_CASELAW.search(window):
+            continue
         if not _ART17_APPLY.search(window):
             continue
         if _ART17_REJECT.search(window):
@@ -291,10 +324,7 @@ def _extract_section(jfull: str, start_marker: str, end_patterns: tuple[str, ...
     return tail[:end_idx]
 
 
-def _extract_sentence_months(main_text: str) -> Optional[int]:
-    m = _SENTENCE_RE.search(main_text)
-    if not m:
-        return None
+def _months_from_match(m: re.Match[str]) -> Optional[int]:
     y_raw, mo_raw = m.group("years"), m.group("months")
     if not y_raw and not mo_raw:
         return None
@@ -304,8 +334,42 @@ def _extract_sentence_months(main_text: str) -> Optional[int]:
         y = 0
     if mo is None:
         mo = 0
-    total = y * 12 + mo
-    return total or None
+    return (y * 12 + mo) or None
+
+
+def _extract_sentence_months(main_text: str) -> Optional[int]:
+    """Prefer 應執行刑 (multi-罪 aggregate) over the first 處有期徒刑 verdict.
+
+    Two complications handled here:
+      1. Multi-defendant judgments — the first 應執行 in 主文 may belong
+         to a later defendant (whose section comes after first defendant's
+         single-罪 verdicts). Detect a defendant boundary between first 處
+         and the candidate 應執行; if found, prefer first 處.
+      2. Partial aggregates — phrases like "前揭得易科罰金之貳罪部分應執行
+         有期徒刑X" only sum a subset of verdicts. Skip these and fall back.
+    """
+    chu_match = _SENTENCE_RE.search(main_text)
+    if not chu_match:
+        return None
+
+    # Find the first 應執行 that isn't a partial-aggregate phrasing.
+    yng_match: Optional[re.Match[str]] = None
+    for m in _AGGREGATE_SENTENCE_RE.finditer(main_text):
+        pre = main_text[max(0, m.start() - 15): m.start()]
+        if "部分" in pre or "前揭" in pre:
+            continue
+        yng_match = m
+        break
+
+    if yng_match is None:
+        return _months_from_match(chu_match)
+
+    # If a new-defendant boundary appears between first 處 and 應執行,
+    # the 應執行 belongs to a later defendant — fall back to first 處.
+    between = main_text[chu_match.end(): yng_match.start()]
+    if _DEFENDANT_BOUNDARY_RE.search(between):
+        return _months_from_match(chu_match)
+    return _months_from_match(yng_match)
 
 
 def _extract_probation_months(main_text: str) -> Optional[int]:

@@ -21,8 +21,8 @@ OVERRIDES: dict[str, dict[str, str]] = {
     "KLDM,113,訴,210,20250711,1": {  # #14: multi-defendant, levels FP, 應執行24月
         "gt_drug_levels": "3",
         "gt_sentence_months": "24",
-        "gt_art17_1": "0",
-        # §59 IS applied (to defendant 乙○○: "爰依刑法第59條之規定，予以減輕其刑")
+        # §17Ⅰ IS applied to 甲○○ ("足認被告甲○○有供出毒品來源因而查獲正犯之情事")
+        # §59 IS applied to 乙○○ ("爰依刑法第59條之規定，予以減輕其刑")
     },
     "KLDM,114,基簡,1129,20251217,1": {"gt_sentence_months": "9"},  # #16: 應執行9月
     "KLDM,113,基簡,415,20240628,1": {"gt_behaviors": "施用,持有"},  # #17
@@ -61,12 +61,20 @@ OVERRIDES: dict[str, dict[str, str]] = {
     },
     "KLDM,113,基簡,252,20240301,1": {"gt_sentence_months": "7"},  # #50
     "KLDM,113,基簡,932,20240919,1": {"gt_art59": "0"},  # #51
-    "KLDM,112,易,577,20231221,1": {"gt_sentence_months": "18"},  # #54
+    "KLDM,112,易,577,20231221,1": {  # #54
+        "gt_sentence_months": "18",
+        "gt_art59": "0",  # judgment: "復無任何符合刑法第59條"
+    },
     "KLDM,112,訴,70,20230606,1": {"gt_sentence_months": "9"},  # #55
     "KLDM,112,易,727,20240117,1": {"gt_sentence_months": "7"},  # #56
     "KLDM,113,易,257,20240605,1": {"gt_art59": "0"},  # #59
-    "KLDM,112,訴,344,20240613,2": {"gt_art59": "0"},  # #53: judgment rejects §59
-    "KLDM,112,易,577,20231221,1": {"gt_art59": "0"},  # #54: "復無任何符合刑法第59條"
+    "KLDM,112,訴,344,20240613,2": {  # #53
+        "gt_art59": "0",  # judgment rejects §59
+        "gt_sentence_months": "88",  # first defendant 周家丞 single-罪 7年4月
+    },
+    "KLDM,111,重訴,6,20230111,2": {  # #60
+        "gt_sentence_months": "82",  # first defendant 羅中彥 應執行 6年10月
+    },
     # --- 61-100 ---
     "KLDM,112,基簡,122,20230204,1": {"gt_sentence_months": "6"},  # #70
     "KLDM,112,基簡,806,20230831,1": {"gt_sentence_months": "5"},  # #71
