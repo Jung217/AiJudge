@@ -82,7 +82,7 @@ class CaseFeatures:
     # Objective
     drug_levels: list[int] = field(default_factory=list)
     behaviors: list[str] = field(default_factory=list)
-    net_pure_weight_g: Optional[float] = None  # TODO v2
+    max_drug_weight_g: Optional[float] = None  # 主文/事實 中最大「淨重 X 公克」
 
     # Statutory reductions / enhancements
     art17_1_applied: bool = False   # 毒品§17Ⅰ 供出來源因而查獲
@@ -181,6 +181,14 @@ _SENTENCE_RE = re.compile(
     rf"(?:(?P<years>[{_CN_CHARS}\d]+)\s*年)?"
     r"\s*"
     rf"(?:(?P<months>[{_CN_CHARS}\d]+)\s*(?:個)?月)?"
+)
+# Drug net weight extraction (純質淨重/驗餘淨重/淨重 X 公克|公斤). Captures
+# numeric value as a string; downstream code converts to grams. Tolerates
+# both Arabic ("0.226") and Chinese-decimal ("零點貳貳陸") forms.
+_NET_WEIGHT_RE = re.compile(
+    r"(?:純\s*質\s*)?(?:驗\s*餘\s*)?淨\s*重\s*(?:約|共\s*計|合\s*計)?\s*"
+    rf"(?P<value>[\d{_CN_CHARS}點\.]+?)\s*"
+    r"(?P<unit>公\s*斤|公\s*克|克)"
 )
 # 應執行有期徒刑 (multi-罪併罰 aggregate sentence) — when present, this is
 # the actual term the defendant serves and should be preferred over individual
@@ -337,6 +345,56 @@ def _months_from_match(m: re.Match[str]) -> Optional[int]:
     return (y * 12 + mo) or None
 
 
+def _parse_decimal(s: str) -> Optional[float]:
+    """Parse a number string that may use Arabic digits or Chinese numerals.
+
+    Supports Arabic ("0.226", "16.7", "1,200"), pure Chinese integers
+    ("拾陸"), and Chinese decimals ("零點貳貳陸", "拾陸點柒零").
+    """
+    s = s.strip().replace(",", "")
+    if not s:
+        return None
+    # Try Arabic float
+    try:
+        return float(s)
+    except ValueError:
+        pass
+    # Chinese decimal: split on 點 (decimal mark)
+    int_part, sep, dec_part = s.partition("點")
+    int_v = _cn_to_int(int_part) if int_part else 0
+    if int_v is None:
+        return None
+    if not sep:
+        return float(int_v)
+    # Decimal part: each char is a literal digit (零-玖, 0-9)
+    dec_str = ""
+    for ch in dec_part:
+        if ch.isdigit():
+            dec_str += ch
+        elif ch in _CN_NUM and _CN_NUM[ch] < 10:
+            dec_str += str(_CN_NUM[ch])
+        else:
+            return None  # unexpected char in decimal
+    if not dec_str:
+        return float(int_v)
+    return float(f"{int_v}.{dec_str}")
+
+
+def _extract_max_drug_weight_g(text: str) -> Optional[float]:
+    """Largest drug net weight (in grams) found in text, normalising 公斤 → 公克."""
+    max_g: Optional[float] = None
+    for m in _NET_WEIGHT_RE.finditer(text):
+        val = _parse_decimal(m.group("value"))
+        if val is None or val <= 0:
+            continue
+        unit = m.group("unit").replace(" ", "")
+        if unit.startswith("公斤"):
+            val *= 1000.0
+        if max_g is None or val > max_g:
+            max_g = val
+    return max_g
+
+
 def _extract_sentence_months(main_text: str) -> Optional[int]:
     """Prefer 應執行刑 (multi-罪 aggregate) over the first 處有期徒刑 verdict.
 
@@ -436,6 +494,7 @@ def extract_features(record: Record) -> CaseFeatures:
         jdate=record.jdate,
         drug_levels=_find_drug_levels(behavior_text),
         behaviors=_find_behaviors(behavior_text),
+        max_drug_weight_g=_extract_max_drug_weight_g(behavior_text),
         art17_1_applied=_check_art17(jfull, _ART17_1_CITATION),
         art17_2_applied=_check_art17(jfull, _ART17_2_CITATION),
         art59_applied=_check_art59(jfull),
