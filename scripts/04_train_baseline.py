@@ -24,6 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from features import extract_features  # noqa: E402
 from records import Record  # noqa: E402
+from rules import binding_constraint, clip_prediction  # noqa: E402
 
 
 BEHAVIORS = ["施用", "持有", "販賣", "運輸", "製造", "轉讓", "意圖販賣而持有"]
@@ -76,6 +77,9 @@ def build_dataframe(jsonl_path: Path, art57_path: Path | None) -> pd.DataFrame:
                 "has_drug_weight": int(wt is not None),
                 "log_drug_weight": np.log1p(wt) if wt is not None else 0.0,
                 "sentence_months": f.sentence_months,
+                # Stored for rule-clip lookup (not fed as features).
+                "_conv_beh": ",".join(f.convicted_behaviors),
+                "_conv_lv": ",".join(map(str, f.convicted_drug_levels)),
             }
             # §57 factors as one-hot per direction (absent → all zeros for that factor)
             factors = art57.get(rec.jid, {})
@@ -101,6 +105,9 @@ def main() -> int:
                     help="JSONL of §57 directions (set to '' to disable)")
     ap.add_argument("--no-art57", action="store_true",
                     help="disable §57 features for comparison")
+    ap.add_argument("--rule-clip", action="store_true",
+                    help="apply statutory range clipping to predictions "
+                         "(currently HURTS MAE — see comment in code)")
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--rounds", type=int, default=500,
                     help="max boosting rounds (early-stopping enabled)")
@@ -114,14 +121,17 @@ def main() -> int:
           f"max={df.sentence_months.max()}")
 
     feature_cols = [c for c in df.columns
-                    if c not in ("jid", "sentence_months")]
+                    if c not in ("jid", "sentence_months")
+                    and not c.startswith("_")]
     X = df[feature_cols].astype(float).values
     y = df["sentence_months"].astype(float).values
     print(f"features ({len(feature_cols)}): {feature_cols}")
 
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.2, random_state=args.seed
-    )
+    indices = np.arange(len(X))
+    i_train, i_test = train_test_split(indices, test_size=0.2, random_state=args.seed)
+    X_train, X_test = X[i_train], X[i_test]
+    y_train, y_test = y[i_train], y[i_test]
+    X_test_idx = i_test
     print(f"train={len(X_train)} test={len(X_test)}")
 
     model = xgb.XGBRegressor(
@@ -137,17 +147,61 @@ def main() -> int:
     )
     model.fit(X_train, y_train, eval_set=[(X_test, y_test)], verbose=False)
 
-    pred = model.predict(X_test)
-    mae = mean_absolute_error(y_test, pred)
-    rmse = np.sqrt(mean_squared_error(y_test, pred))
-    r2 = r2_score(y_test, pred)
+    pred_raw = model.predict(X_test)
+    mae = mean_absolute_error(y_test, pred_raw)
+    rmse = np.sqrt(mean_squared_error(y_test, pred_raw))
+    r2 = r2_score(y_test, pred_raw)
 
     print()
     print(f"Test set (n={len(X_test)}):")
-    print(f"  MAE  = {mae:.2f} months")
-    print(f"  RMSE = {rmse:.2f} months")
-    print(f"  R^2  = {r2:.3f}")
+    print(f"  MAE  = {mae:.2f} months  (raw)")
+    print(f"  RMSE = {rmse:.2f} months  (raw)")
+    print(f"  R^2  = {r2:.3f}              (raw)")
     print(f"  best_iteration = {model.best_iteration}")
+
+    # Rule-constrained prediction (opt-in via --rule-clip).
+    #
+    # Caveat: features.behaviors is the *union* of all detected acts in the
+    # judgment, which often includes acts mentioned in the facts narrative
+    # but not actually convicted (e.g. 起訴 was 販賣 but court convicted 施用).
+    # This causes the binding constraint to overshoot — 53/301 test cases
+    # had truth < rule's minimum, so naive clipping forces the prediction
+    # up to a high statutory floor that doesn't apply. To use rule clipping
+    # safely we'd need conviction-only behavior extraction (from 主文 only),
+    # which is left as future work.
+    pred = pred_raw
+    if args.rule_clip:
+        df_test = df.iloc[X_test_idx]
+        pred_clipped = pred_raw.copy()
+        n_clipped = n_no_constraint = 0
+        for i, (_, row) in enumerate(df_test.iterrows()):
+            # Use 主文-only convicted behaviors for the constraint lookup —
+            # the union (b_*) includes facts-narrative acts that aren't the
+            # actual conviction.
+            behaviors = {b for b in row["_conv_beh"].split(",") if b}
+            levels = {int(lv) for lv in row["_conv_lv"].split(",") if lv}
+            constraint = binding_constraint(
+                behaviors, levels,
+                art17_1=bool(row["art17_1"]),
+                art17_2=bool(row["art17_2"]),
+                art59=bool(row["art59"]),
+                recidivism=bool(row["recidivism"]),
+            )
+            if constraint is None:
+                n_no_constraint += 1
+                continue
+            new_p = clip_prediction(float(pred_raw[i]), constraint)
+            if abs(new_p - pred_raw[i]) > 0.01:
+                n_clipped += 1
+            pred_clipped[i] = new_p
+        mae_c = mean_absolute_error(y_test, pred_clipped)
+        rmse_c = np.sqrt(mean_squared_error(y_test, pred_clipped))
+        r2_c = r2_score(y_test, pred_clipped)
+        print(f"\n  MAE  = {mae_c:.2f} months  (rule-clipped, {n_clipped}/{len(X_test)} clipped)")
+        print(f"  RMSE = {rmse_c:.2f} months  (rule-clipped)")
+        print(f"  R^2  = {r2_c:.3f}              (rule-clipped)")
+        print(f"  cases without binding constraint: {n_no_constraint}")
+        pred = pred_clipped
 
     # Naive baselines for comparison
     median_pred = np.full_like(y_test, np.median(y_train))

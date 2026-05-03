@@ -82,6 +82,11 @@ class CaseFeatures:
     # Objective
     drug_levels: list[int] = field(default_factory=list)
     behaviors: list[str] = field(default_factory=list)
+    # 主文-only restriction (the *convicted* charge, not all acts mentioned).
+    # Use this for statutory rule lookup — `behaviors` includes facts-narrative
+    # acts which are often broader than the actual conviction.
+    convicted_behaviors: list[str] = field(default_factory=list)
+    convicted_drug_levels: list[int] = field(default_factory=list)
     max_drug_weight_g: Optional[float] = None  # 主文/事實 中最大「淨重 X 公克」
 
     # Statutory reductions / enhancements
@@ -494,6 +499,8 @@ def extract_features(record: Record) -> CaseFeatures:
         jdate=record.jdate,
         drug_levels=_find_drug_levels(behavior_text),
         behaviors=_find_behaviors(behavior_text),
+        convicted_behaviors=_find_behaviors(main_text),
+        convicted_drug_levels=_find_drug_levels(main_text),
         max_drug_weight_g=_extract_max_drug_weight_g(behavior_text),
         art17_1_applied=_check_art17(jfull, _ART17_1_CITATION),
         art17_2_applied=_check_art17(jfull, _ART17_2_CITATION),
