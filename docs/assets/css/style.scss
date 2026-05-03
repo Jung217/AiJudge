@@ -109,3 +109,41 @@
 
 /* Footer caption */
 .main-content small { color: #57606a; }
+
+/* Paper-style byline under title */
+.main-content p.byline {
+  text-align: center;
+  font-size: 1.05em;
+  color: #57606a;
+  margin: 0.6em auto 2.4em;
+  max-width: 720px;
+  line-height: 1.7;
+}
+
+/* Footer note (research disclaimer) */
+.main-content p.footer-note {
+  margin-top: 2em;
+  padding: 1em 1.2em;
+  background: #f6f8fa;
+  border-left: 3px solid #d0d7de;
+  font-size: 0.92em;
+  color: #57606a;
+  line-height: 1.7;
+}
+
+/* Bigger headings for paper-style hierarchy */
+.main-content h2 {
+  font-size: 1.5em;
+  margin-top: 2.4em;
+}
+.main-content h3 {
+  font-size: 1.15em;
+  margin-top: 1.6em;
+  color: #24292f;
+}
+
+/* Wider charts container */
+.main-content canvas {
+  margin: 1em auto;
+  max-width: 100%;
+}
