@@ -3,11 +3,9 @@
 > **臺灣基隆地方法院毒品案件量刑預測模型**
 > 38 個月、1,598 件判決 · features.py 結構化抽取 + XGBoost + 法定刑度約束
 
-📖 **完整成果展示** → <https://jung217.github.io/AiJudge/>
+完整成果展示 → <https://jung217.github.io/AiJudge/>
 
----
-
-## 🎯 核心成果
+## 核心成果
 
 | 指標 | 結果 |
 |---|---|
@@ -19,23 +17,21 @@
 
 施用/持有 案件 MAE **1–2 月**；販賣/運輸 MAE **17–27 月**（資料稀疏）。
 
----
-
-## 🛠 資料管線
+## 資料管線
 
 ```
 司法院月度 RAR 檔  →  解壓 (bsdtar)  →  records.iter_records_dir
-        ↓
-filter.py  ──→  KL prefix + 毒品案 + 一審有罪 → 1,598 件 JSONL
-        ↓
-features.py  ──→  行為(7類) / 級數 / §17 §59 §47 / 純質淨重 / 量刑
-        ↓                                       ↑
-        ↓                              §57 因子（Claude sub-agent 抽取）
-        ↓
-04_train_baseline.py  ──→  XGBoost + rules.py 法定刑度 clip
+        |
+filter.py  --->  KL prefix + 毒品案 + 一審有罪 → 1,598 件 JSONL
+        |
+features.py  --->  行為(7類) / 級數 / §17 §59 §47 / 純質淨重 / 量刑
+        |                                       ^
+        |                              §57 因子（Claude sub-agent 抽取）
+        v
+04_train_baseline.py  --->  XGBoost + rules.py 法定刑度 clip
 ```
 
-## 📦 安裝
+## 安裝
 
 ```bash
 git clone https://github.com/Jung217/AiJudge
@@ -44,7 +40,7 @@ pip install -r requirements.txt
 # bsdtar (Windows tar.exe) 或 unrar 任選一個用於解壓 .rar
 ```
 
-## 🚀 用法
+## 用法
 
 ```bash
 # 1. 把月度 RAR 放進 data/raw/
@@ -68,7 +64,7 @@ python scripts/05_sample_for_labeling.py --n 100 --prefill
 # 填完 → python scripts/06_evaluate_labels.py
 ```
 
-## 📚 模組
+## 模組
 
 | 檔案 | 功能 |
 |---|---|
@@ -85,7 +81,7 @@ python scripts/05_sample_for_labeling.py --n 100 --prefill
 
 詳細演算法說明：<https://jung217.github.io/AiJudge/>
 
-## 🧠 技術亮點
+## 技術亮點
 
 - **Citation-anchored §17/§59 偵測**：跳過 recital 樣板（按⋯定有明文）+ 句子收斂窗口 + 應用/拒絕詞偵測 → §17Ⅱ F1 0.93、§59 F1 1.00
 - **多被告/多罪併罰應執行刑抽取**：偵測「。<被告名>犯」boundary 區分定執行刑歸屬，量刑 exact-match 100%
@@ -93,13 +89,13 @@ python scripts/05_sample_for_labeling.py --n 100 --prefill
 - **§57 量刑因子 LLM 抽取**：5 個 Claude Code sub-agent 平行處理，每件輸出 10 因子 × {mitigating, aggravating, neutral, absent}
 - **法定刑度約束**：用主文-only 已定罪行為 lookup → 違約率 18% → 4%
 
-## 📡 資料來源
+## 資料來源
 
 - 司法院月度判決書 RAR：<https://opendata.judicial.gov.tw/api/FilesetLists/{id}/file>（id 範圍 63694–64055，1996-01 至 ~2026-03）
 - 受機器人挑戰保護，需 Playwright + cookie 注入或瀏覽器手動下載
 - 主要欄位：`JID`(案號) / `JYEAR` / `JCASE`(字別) / `JNO` / `JDATE` / `JTITLE`(案由) / `JFULL`(全文) / `JPDF`
 
-## 📖 參考
+## 參考
 
 - [司法院裁判書系統](https://judgment.judicial.gov.tw/FJUD/default.aspx)
 - [司法院資料開放平臺](https://opendata.judicial.gov.tw/)
@@ -107,13 +103,13 @@ python scripts/05_sample_for_labeling.py --n 100 --prefill
 - 刑法 §47（累犯）/ §51（多罪併罰）/ §59（酌減）/ §66（減刑限度）
 - 司法院釋字第 775 號（累犯加重必要性）
 
-## ⚠ 限制與聲明
+## 限制與聲明
 
 - **僅供學術研究用途**。本模型不可作為法律建議或審判依據。
 - 訓練資料限於基隆地方法院，不適用於其他法院或不同罪名。
 - 純質淨重欄位 22.7% 覆蓋率，重大案件仍需專家輔助判斷。
 - 多被告案件採首被告視角；複雜共犯結構未完整建模。
 
-## 📄 License
+## License
 
 MIT — see [LICENSE](LICENSE).

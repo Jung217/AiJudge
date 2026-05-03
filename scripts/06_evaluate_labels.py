@@ -26,7 +26,7 @@ NUM_FIELDS = ("sentence_months", "detention_days", "probation_months")
 
 def _parse_bool(s: str) -> bool | None:
     s = (s or "").strip().lower()
-    if s in ("1", "true", "t", "y", "yes", "v", "✓"):
+    if s in ("1", "true", "t", "y", "yes", "v"):
         return True
     if s in ("0", "false", "f", "n", "no", "x"):
         return False

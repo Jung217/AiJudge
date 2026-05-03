@@ -9,9 +9,7 @@ title: AiJudge — 基隆地方法院毒品案件量刑預測
 > 來源：[司法院開放資料平臺](https://opendata.judicial.gov.tw/)
 > 完整代碼：[github.com/Jung217/AiJudge](https://github.com/Jung217/AiJudge)
 
----
-
-## 📊 核心成果
+## 核心成果
 
 ### features.py 抽取品質（100 件人工驗證）
 
@@ -58,43 +56,34 @@ recidivism            334    b_製造            334    n_behaviors           33
 
 毒品行為（運輸/販賣/製造）+ 減刑因子（§17/§59）+ 易科罰金 三大量刑判準佔據前 15 名，與法律實務一致。
 
----
-
-## 🛠 資料管線
+## 資料管線
 
 ```
-┌─────────────────┐  bsdtar  ┌──────────────┐
-│ 司法院 RAR 月檔  │ ───────→ │ JSON / 案件   │
-│  (38 個月)      │           │ ~2.17M files  │
-└─────────────────┘           └───────┬──────┘
-                                      │ filter.py
-                                      ↓ (KL prefix + 毒品案 + 一審有罪)
-                              ┌──────────────┐
-                              │ 1,598 件      │
-                              │ 基隆毒品判決   │
-                              └───────┬──────┘
-                                      │ features.py
-                                      ↓
-                              ┌──────────────┐
-                              │ 結構化特徵     │
-                              │ - 行為(7類)    │
-                              │ - 毒品級數     │
-                              │ - §17/§59     │
-                              │ - 純質淨重     │
-                              │ - §57 因子(LLM)│
-                              │ - 量刑(月/日)  │
-                              └───────┬──────┘
-                                      │ 04_train_baseline.py
-                                      ↓
-                              ┌──────────────┐
-                              │ XGBoost +    │
-                              │ rules.py 約束 │
-                              └──────────────┘
+司法院 RAR 月檔 ──bsdtar──> JSON / 案件
+  (38 個月)                  ~2.17M files
+                                |
+                                | filter.py (KL prefix + 毒品案 + 一審有罪)
+                                v
+                         1,598 件
+                         基隆毒品判決
+                                |
+                                | features.py
+                                v
+                         結構化特徵
+                         - 行為(7類)
+                         - 毒品級數
+                         - §17/§59
+                         - 純質淨重
+                         - §57 因子 (LLM)
+                         - 量刑(月/日)
+                                |
+                                | 04_train_baseline.py
+                                v
+                         XGBoost +
+                         rules.py 約束
 ```
 
----
-
-## 🧠 技術細節
+## 技術細節
 
 ### features.py 量刑因子偵測
 
@@ -143,9 +132,7 @@ _NET_WEIGHT_RE = re.compile(
 
 關鍵：用**主文-only 已定罪行為**（非全文 union）做 lookup — 否則 union 包含起訴書/事實段提到但未定罪的高階行為，會把刑度上限算過高。改成主文-only 後，violations 從 18% 降到 4%。
 
----
-
-## 📈 誤差分析（按主要罪名）
+## 誤差分析（按主要罪名）
 
 | 主要罪名 | n | MAE | 中位刑期 |
 |---|---|---|---|
@@ -162,19 +149,15 @@ _NET_WEIGHT_RE = re.compile(
 2. **重罪「過度減刑」失準** — §17Ⅱ + §59 雙重減刑時，模型估不準法官實際讓步幅度
 3. **多被告 feature 對齊問題** — `behaviors` 是全文 union 但 target 是首被告刑期，~5–10% 案件受影響
 
----
+## 未來方向
 
-## 🚀 未來方向
+- 擴大重罪訓練資料（50+ 個月覆蓋）
+- 多被告案件 per-defendant 拆解
+- `convicted_behaviors`（主文-only）作為 ML feature 而非僅約束 lookup
+- §57 因子降噪（由 Claude API 集成多 agent 投票替代單 agent）
+- 信賴區間預測（quantile regression）取代 point estimate
 
-- [ ] 擴大重罪訓練資料（50+ 個月覆蓋）
-- [ ] 多被告案件 per-defendant 拆解
-- [ ] `convicted_behaviors`（主文-only）作為 ML feature 而非僅約束 lookup
-- [ ] §57 因子降噪（由 Claude API 集成多 agent 投票替代單 agent）
-- [ ] 信賴區間預測（quantile regression）取代 point estimate
-
----
-
-## 📚 模組
+## 模組
 
 | 檔案 | 功能 |
 |---|---|
@@ -187,15 +170,11 @@ _NET_WEIGHT_RE = re.compile(
 | `scripts/06_evaluate_labels.py` | features.py 對 ground-truth 評估 |
 | `data/processed/art57_factors.jsonl` | LLM 抽取的 §57 量刑因子（1,598 件）|
 
----
-
-## ⚠ 限制與聲明
+## 限制與聲明
 
 - **僅供研究用途**。本模型不可作為法律建議或審判依據。
 - 訓練資料限於基隆地方法院，**不適用於其他法院或不同罪名**。
 - 純質淨重欄位 22.7% 覆蓋率有限，重大案件仍需專家輔助判斷。
 - features.py 在多被告案件採首被告視角；複雜共犯結構未完整建模。
-
----
 
 <small>Last updated: 2026-05-03 · Built with Python 3.9, XGBoost 2.1, Claude Code sub-agents</small>

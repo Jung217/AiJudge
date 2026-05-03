@@ -113,7 +113,7 @@ def main() -> int:
     passed = list(keelung_drug_cases(SAMPLES))
     print(f"after filter: {len(passed)} (expected 3 — three Keelung drug guilty cases)")
     for r in passed:
-        print(f"  ✓ {r.jid} | {r.jtitle} | 字別={r.jcase}")
+        print(f"  - {r.jid} | {r.jtitle} | 字別={r.jcase}")
 
     divider("Stage 2 — Feature extraction")
     for r in passed:
@@ -143,7 +143,7 @@ def main() -> int:
         print(f"  after §17Ⅱ + 累犯:           [{reduced.min_months:.0f}, {reduced.max_months:.0f}] months")
         if case1.sentence_months:
             clipped = clip_prediction(case1.sentence_months, reduced)
-            mark = "✓ 在法定刑內" if clipped == case1.sentence_months else "⚠ 越界,clip 後調整"
+            mark = "在法定刑內" if clipped == case1.sentence_months else "越界,clip 後調整"
             print(f"  actual sentence = {case1.sentence_months} → clip = {clipped:.0f}  {mark}")
 
     case2 = extract_features(passed[1])
@@ -153,7 +153,7 @@ def main() -> int:
         print(f"  statutory range (§10 Ⅱ):   [{base.min_months}, {base.max_months}] months")
         if case2.sentence_months:
             clipped = clip_prediction(case2.sentence_months, base)
-            mark = "✓ 在法定刑內" if clipped == case2.sentence_months else "⚠ 越界"
+            mark = "在法定刑內" if clipped == case2.sentence_months else "越界"
             print(f"  actual sentence = {case2.sentence_months} → clip = {clipped:.0f}  {mark}")
 
     divider("Summary")

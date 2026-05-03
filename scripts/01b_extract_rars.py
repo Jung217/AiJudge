@@ -88,7 +88,7 @@ def main():
         # 空間檢查
         fg = free_gb(OUT_DIR)
         if fg < MIN_FREE_GB:
-            log(f"⚠ 剩餘 {fg:.2f} GB < {MIN_FREE_GB} GB，中止以免爆盤")
+            log(f"剩餘 {fg:.2f} GB < {MIN_FREE_GB} GB，中止以免爆盤")
             break
 
         size_mb = os.path.getsize(rar) / 1024 / 1024
