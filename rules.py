@@ -86,13 +86,15 @@ def apply_reductions(
     art17_1: bool = False,
     art17_2: bool = False,
     art59: bool = False,
+    attempt: bool = False,
     recidivism: bool = False,
 ) -> SentencingConstraint:
     """Apply statutory reductions and recidivism enhancement.
 
     刑法§66: 有期徒刑減輕其刑「至二分之一」— the reduced range has both
     lower and upper bounds scaled by 1/2.
-    刑法§70: multiple reductions compound (each ×1/2).
+    刑法§70: multiple reductions compound (each ×1/2). Reductions counted:
+    毒品§17Ⅰ, 毒品§17Ⅱ, 刑法§59, and 刑法§25Ⅱ 未遂犯 (得按既遂犯之刑減輕).
     刑法§47 + 釋字775: 累犯加重「至二分之一」enhances the *upper* bound only;
     the lower bound stays untouched to allow proportionality (otherwise
     a reduced §17 case combined with 累犯 would have an impossibly high floor).
@@ -100,7 +102,7 @@ def apply_reductions(
     lo, hi = base.min_months, base.max_months
 
     reduction_factor = 1.0
-    for flag in (art17_1, art17_2, art59):
+    for flag in (art17_1, art17_2, art59, attempt):
         if flag:
             reduction_factor *= 0.5
     lo *= reduction_factor
@@ -110,7 +112,7 @@ def apply_reductions(
         hi = min(hi * 1.5, MAX_FIXED_TERM_MONTHS)
 
     # Once reduced, life/capital options do not auto-apply
-    any_reduction = art17_1 or art17_2 or art59
+    any_reduction = art17_1 or art17_2 or art59 or attempt
     return SentencingConstraint(
         min_months=lo,
         max_months=hi,
@@ -164,6 +166,18 @@ def aggregate_sentence_bounds(individual_months: list[float]) -> tuple[float, fl
     return max(individual_months), min(sum(individual_months), MAX_AGGREGATE_TERM_MONTHS)
 
 
+def aggregate_only_constraint() -> SentencingConstraint:
+    """Constraint to use when the label is a 數罪併罰 應執行刑 but the per-count
+    behaviour/level breakdown isn't parsed.
+
+    Only the §51 ceiling (30 年) is universally enforceable: the §51 floor is
+    ``max(individual sentences)`` — which the aggregate automatically satisfies —
+    and a tighter ceiling (``min(Σ individual maxima, 30Y)``) needs each count's
+    statutory range. So we enforce just ``[0, 30 年]``.
+    """
+    return SentencingConstraint(0.0, MAX_AGGREGATE_TERM_MONTHS)
+
+
 # Severity ranking for picking the "primary" behavior in multi-act cases.
 # Judges typically apply the highest-tier statute (高度行為吸收低度行為);
 # §4 (販賣/運輸/製造) > §5 (意圖販賣而持有) > §8 (轉讓) > §10 (施用) > §11 (持有).
@@ -182,15 +196,26 @@ def binding_constraint(
     art17_1: bool = False,
     art17_2: bool = False,
     art59: bool = False,
+    attempt: bool = False,
     recidivism: bool = False,
+    summary: bool = False,
     law_version: int = 2020,
 ) -> Optional[SentencingConstraint]:
-    """Strictest applicable sentencing constraint for a case.
+    """Strictest applicable sentencing constraint for a (single-count) case.
 
     Picks the most-severe behavior (e.g. 販賣 over 持有) and the lowest
-    drug level (e.g. 第一級 over 第三級), looks up base range, then applies
-    statutory reductions / 累犯 enhancement. Returns None if the
-    (behavior, level) tuple is not in the penalty table.
+    drug level (e.g. 第一級 over 第三級), looks up the base range, then applies
+    statutory reductions (§17Ⅰ/Ⅱ, §59, §25Ⅱ 未遂) and 累犯 enhancement.
+    Returns None if the (behavior, level) tuple is not in the penalty table.
+
+    ``summary``: the case is a 簡易判決. Such judgments can impose at most a
+    得易科罰金 (≤6 month) sentence, so when the statute requires more there
+    must be a reduction — which is frequently recorded only in the referenced
+    聲請簡易判決處刑書 (not in JFULL). To avoid spurious below-floor flags we
+    halve the *lower* bound for summary cases (a §59-equivalent allowance);
+    the upper bound is untouched.
+
+    Not for 數罪併罰 aggregates — use :func:`aggregate_only_constraint` there.
     """
     if not behaviors or not drug_levels:
         return None
@@ -199,7 +224,11 @@ def binding_constraint(
     base = base_range(primary, primary_level, law_version)
     if base is None:
         return None
-    return apply_reductions(
+    c = apply_reductions(
         base, art17_1=art17_1, art17_2=art17_2,
-        art59=art59, recidivism=recidivism,
+        art59=art59, attempt=attempt, recidivism=recidivism,
     )
+    if summary and c.min_months > 0:
+        c = SentencingConstraint(c.min_months * 0.5, c.max_months,
+                                 c.includes_life, c.includes_capital)
+    return c

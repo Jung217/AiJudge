@@ -92,6 +92,12 @@ class CaseFeatures:
     # row mixes several people's sentences (and 沒收/§59 flags become
     # ambiguous) — such rows should be dropped from a per-defendant model.
     n_defendants: int = 1
+    # Number of 處有期徒刑 verdicts in 主文. >1 → 數罪併罰: `sentence_months`
+    # is then the 應執行 aggregate, which a single-count statutory range can't
+    # bound (only the 30-year §51 cap applies).
+    n_sentence_counts: int = 0
+    is_aggregate_sentence: bool = False   # sentence_months came from 應執行
+    is_attempt: bool = False              # 主文 含「未遂」(刑法§25Ⅱ 得減輕)
 
     # Statutory reductions / enhancements
     art17_1_applied: bool = False   # 毒品§17Ⅰ 供出來源因而查獲
@@ -425,8 +431,15 @@ def _extract_max_drug_weight_g(text: str) -> Optional[float]:
     return max_g
 
 
-def _extract_sentence_months(main_text: str) -> Optional[int]:
-    """Prefer 應執行刑 (multi-罪 aggregate) over the first 處有期徒刑 verdict.
+_CHU_VERDICT_RE = re.compile(r"處\s*有\s*期\s*徒\s*刑")
+_ATTEMPT_RE = re.compile(r"未\s*遂")
+
+
+def _extract_sentence_months(main_text: str) -> tuple[Optional[int], bool]:
+    """Returns ``(months, is_aggregate)``.
+
+    Prefers the 應執行刑 (數罪併罰 aggregate) over the first 處有期徒刑 verdict;
+    ``is_aggregate`` is True when the returned value came from an 應執行 clause.
 
     Two complications handled here:
       1. Multi-defendant judgments — the first 應執行 in 主文 may belong
@@ -438,7 +451,7 @@ def _extract_sentence_months(main_text: str) -> Optional[int]:
     """
     chu_match = _SENTENCE_RE.search(main_text)
     if not chu_match:
-        return None
+        return None, False
 
     # Find the first 應執行 that isn't a partial-aggregate phrasing.
     yng_match: Optional[re.Match[str]] = None
@@ -450,14 +463,17 @@ def _extract_sentence_months(main_text: str) -> Optional[int]:
         break
 
     if yng_match is None:
-        return _months_from_match(chu_match)
+        return _months_from_match(chu_match), False
 
     # If a new-defendant boundary appears between first 處 and 應執行,
     # the 應執行 belongs to a later defendant — fall back to first 處.
     between = main_text[chu_match.end(): yng_match.start()]
     if _DEFENDANT_BOUNDARY_RE.search(between):
-        return _months_from_match(chu_match)
-    return _months_from_match(yng_match)
+        return _months_from_match(chu_match), False
+    agg = _months_from_match(yng_match)
+    if agg is None:
+        return _months_from_match(chu_match), False
+    return agg, True
 
 
 def _extract_probation_months(main_text: str) -> Optional[int]:
@@ -516,6 +532,7 @@ def extract_features(record: Record) -> CaseFeatures:
     # 轉讓禁藥 (藥事法 §83) cases the offense name appears only there. Search
     # both 主文 and 事實 for behaviors / drug levels.
     behavior_text = main_text + "\n" + text_for_facts
+    sentence_months, is_aggregate = _extract_sentence_months(main_text)
     # Statutory citations and reduction phrases can appear in 主文, 事實, or 理由
     # depending on judgment style — search the whole document rather than gating
     # on a possibly-misextracted section.
@@ -527,13 +544,16 @@ def extract_features(record: Record) -> CaseFeatures:
         convicted_behaviors=_find_behaviors(main_text),
         convicted_drug_levels=_find_drug_levels(main_text),
         n_defendants=_count_defendants(main_text),
+        n_sentence_counts=len(_CHU_VERDICT_RE.findall(main_text)),
+        is_aggregate_sentence=is_aggregate,
+        is_attempt=bool(_ATTEMPT_RE.search(main_text)),
         max_drug_weight_g=_extract_max_drug_weight_g(behavior_text),
         art17_1_applied=_check_art17(jfull, _ART17_1_CITATION),
         art17_2_applied=_check_art17(jfull, _ART17_2_CITATION),
         art59_applied=_check_art59(jfull),
         self_surrender=_any_match(_ART62_PATTERNS, jfull),
         recidivism=_any_match(_ART47_PATTERNS, jfull),
-        sentence_months=_extract_sentence_months(main_text),
+        sentence_months=sentence_months,
         detention_days=_extract_detention_days(main_text),
         probation_months=_extract_probation_months(main_text),
         can_convert_to_fine="易科罰金" in main_text,

@@ -3,8 +3,10 @@ import pytest
 
 from models import constrain_sentence
 from rules import (
+    MAX_AGGREGATE_TERM_MONTHS,
     MAX_FIXED_TERM_MONTHS,
     SentencingConstraint,
+    aggregate_only_constraint,
     aggregate_sentence_bounds,
     apply_reductions,
     base_range,
@@ -33,6 +35,14 @@ def test_reductions_compound_per_art70():
     base = SentencingConstraint(120, 360)
     r = apply_reductions(base, art17_1=True, art59=True)   # ×1/2 ×1/2
     assert (r.min_months, r.max_months) == (30, 90)
+
+
+def test_attempt_counts_as_a_reduction():
+    base = SentencingConstraint(120, 360)
+    r = apply_reductions(base, attempt=True)               # §25Ⅱ ×1/2
+    assert (r.min_months, r.max_months) == (60, 180)
+    r2 = apply_reductions(base, art17_2=True, attempt=True)  # ×1/2 ×1/2
+    assert (r2.min_months, r2.max_months) == (30, 90)
 
 
 def test_recidivism_raises_only_upper_bound_and_caps_at_30y():
@@ -87,6 +97,29 @@ def test_binding_constraint_none_when_unmapped_or_empty():
     assert binding_constraint(set(), {2}) is None
     assert binding_constraint({"施用"}, set()) is None
     assert binding_constraint({"持有"}, {9}) is None  # level 9 not in table
+
+
+def test_binding_constraint_summary_halves_only_the_floor():
+    plain = binding_constraint({"施用"}, {1})              # §10Ⅰ [6, 60]
+    summ = binding_constraint({"施用"}, {1}, summary=True)
+    assert (plain.min_months, plain.max_months) == (6, 60)
+    assert (summ.min_months, summ.max_months) == (3, 60)
+    # no effect when the floor is already 0
+    assert binding_constraint({"施用"}, {2}, summary=True).min_months == 0
+
+
+def test_binding_constraint_passes_attempt_through():
+    base = binding_constraint({"販賣"}, {3})               # §4Ⅲ [84, 360]
+    att = binding_constraint({"販賣"}, {3}, attempt=True)
+    assert (att.min_months, att.max_months) == (base.min_months / 2,
+                                                base.max_months / 2)
+
+
+def test_aggregate_only_constraint():
+    c = aggregate_only_constraint()
+    assert (c.min_months, c.max_months) == (0.0, MAX_AGGREGATE_TERM_MONTHS)
+    assert is_within(0, c) and is_within(MAX_AGGREGATE_TERM_MONTHS, c)
+    assert not is_within(MAX_AGGREGATE_TERM_MONTHS + 1, c)
 
 
 def test_violation_rate_excludes_unmapped():

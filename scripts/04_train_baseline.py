@@ -37,6 +37,7 @@ from features import extract_features  # noqa: E402
 from models import ModelBundle  # noqa: E402
 from records import Record  # noqa: E402
 from rules import (  # noqa: E402
+    aggregate_only_constraint,
     binding_constraint,
     clip_prediction,
     violation_rate,
@@ -89,6 +90,9 @@ def build_dataframe(jsonl_path: Path, art57_path: Path | None) -> pd.DataFrame:
                 "can_convert_to_fine": int(f.can_convert_to_fine),
                 "n_behaviors": len(f.behaviors),
                 "n_drug_levels": len(f.drug_levels),
+                "n_sentence_counts": f.n_sentence_counts,
+                "is_aggregate_sentence": int(f.is_aggregate_sentence),
+                "is_attempt": int(f.is_attempt),
                 "max_drug_weight_g": wt if wt is not None else -1.0,
                 "has_drug_weight": int(wt is not None),
                 "log_drug_weight": np.log1p(wt) if wt is not None else 0.0,
@@ -96,6 +100,7 @@ def build_dataframe(jsonl_path: Path, art57_path: Path | None) -> pd.DataFrame:
                 # Bookkeeping columns (underscore prefix → excluded from features).
                 "_jdate": rec.jdate,
                 "_n_def": f.n_defendants,
+                "_summary": int("簡" in rec.jcase),
                 "_conv_beh": ",".join(f.convicted_behaviors),   # rule-clip lookup
                 "_conv_lv": ",".join(map(str, f.convicted_drug_levels)),
             }
@@ -157,12 +162,18 @@ def _fit(model: xgb.XGBRegressor, X_tr, y_tr, val_frac: float = 0.15):
 def _constraints_for(df_rows: pd.DataFrame) -> list:
     out = []
     for _, row in df_rows.iterrows():
+        # 數罪併罰: the label is an 應執行 aggregate (or 主文 has ≥2 有期徒刑
+        # counts) — a single-count statutory range can't bound it.
+        if row["is_aggregate_sentence"] or row["n_sentence_counts"] > 1:
+            out.append(aggregate_only_constraint())
+            continue
         behaviors = {b for b in row["_conv_beh"].split(",") if b}
         levels = {int(lv) for lv in row["_conv_lv"].split(",") if lv}
         out.append(binding_constraint(
             behaviors, levels,
             art17_1=bool(row["art17_1"]), art17_2=bool(row["art17_2"]),
-            art59=bool(row["art59"]), recidivism=bool(row["recidivism"]),
+            art59=bool(row["art59"]), attempt=bool(row["is_attempt"]),
+            recidivism=bool(row["recidivism"]), summary=bool(row["_summary"]),
         ))
     return out
 

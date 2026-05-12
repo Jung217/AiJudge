@@ -317,7 +317,9 @@ AiJudge/
 3. ⏳ 人工標註 100 筆驗證特徵抽取器（已有 `scripts/05_sample_for_labeling.py` + `06_evaluate_labels.py`）
    - [done] `04_train_baseline.py` 已改為 **walk-forward 時序 CV**（預設 5 fold 擴展視窗，`--holdout` 才是舊的隨機 80/20）+ 層 4 約束裁剪（預設開啟）+ 法定刑越界率報告（gt 標籤 / raw 預測 / clipped 預測三段）。
    - [done] `features.n_defendants`：偵測 主文 中被告人數；多被告判決預設排除（per-judgment 列會混到多人刑度，`--keep-multi-defendant` 可保留）。
-   - 現況（2023–2026 資料、1441 列、5 fold pooled）：rule-clipped 越界率 = 0.00%；MAE ≈ 2.5 月、±3 月命中 ≈ 88%、±6 月 ≈ 94%。
-   - **殘留 ground-truth 越界率 ~3.9%**：剩下多為 §11 純質淨重加重型未建表、混合罪數的應執行刑、以及簡易判決中 §59/§17 減刑寫在「聲請簡易判決處刑書」附件而 JFULL 看不到——待 W3–W4 標註時一併處理。
+   - [done] 數罪併罰處理：`features.n_sentence_counts` / `is_aggregate_sentence`；多罪/應執行刑的列改用 `rules.aggregate_only_constraint()`（只強制 §51 三十年上限，因為單罪刑度區間無法約束合併刑）。
+   - [done] `features.is_attempt`（主文「未遂」）→ `rules` 視為 §25Ⅱ 得減輕（與 §59 同，上下限各 ×½）；`binding_constraint(summary=True)` 對簡易判決把下限 ×½（§59 常只記於「聲請簡易判決處刑書」附件，JFULL 看不到）。`n_sentence_counts` / `is_aggregate_sentence` / `is_attempt` 同時當成模型特徵。
+   - 現況（2023–2026 資料、1441 列、5 fold pooled）：rule-clipped 越界率 = 0.00%；ground-truth 越界率 1.0%；MAE ≈ 2.4 月、±3 月命中 ≈ 89%、±6 月 ≈ 95%。
+   - **殘留 ~1.0% ground-truth 越界**：幾乎都是販賣/運輸重罪被判到法定最低刑以下（依法必有 §59/§17 減刑，但偵審自白以外的 §59 我們的偵測器太保守抓不到，且多被告判決中的 §17/§59 討論會被全文偵測誤算到別人身上），外加 1 件 §11 持有純質淨重加重型未建表——皆屬已知難點，需 per-defendant 範圍化的減刑偵測 + 法律專家補表。
 4. ⏳ LLM (Claude API) 抽取 §57 量刑因子（scaffold 在 `scripts/07_llm_extract_factors.py`，待 API key + 標註資料）
 5. ⏳ 擴大至北部 5 地院資料 → 建立基礎模型

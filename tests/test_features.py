@@ -38,6 +38,27 @@ def test_extract_features_sets_n_defendants():
         "甲○○施用第二級毒品，處有期徒刑3月，如易科罰金，以新臺幣1000元折算1日。\n"
         "犯罪事實\n..."))
     assert f.n_defendants == 1
+    assert f.n_sentence_counts == 1
+    assert f.is_aggregate_sentence is False
+    assert f.is_attempt is False
     assert f.sentence_months == 3
     assert "施用" in f.convicted_behaviors
     assert f.convicted_drug_levels == [2]
+
+
+def test_extract_features_aggregate_and_count():
+    f = extract_features(_rec(
+        "臺灣基隆地方法院刑事判決\n主文\n"
+        "甲○○施用第一級毒品，處有期徒刑肆月；又施用第二級毒品，處有期徒刑壹月。"
+        "應執行有期徒刑伍月，如易科罰金，以新臺幣壹仟元折算壹日。\n犯罪事實\n..."))
+    assert f.n_sentence_counts == 2
+    assert f.is_aggregate_sentence is True
+    assert f.sentence_months == 5          # the 應執行 aggregate, not the first count
+
+
+def test_extract_features_detects_attempt():
+    f = extract_features(_rec(
+        "臺灣基隆地方法院刑事判決\n主文\n"
+        "甲○○販賣第二級毒品未遂，處有期徒刑貳年。\n犯罪事實\n..."))
+    assert f.is_attempt is True
+    assert f.sentence_months == 24
