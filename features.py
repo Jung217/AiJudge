@@ -88,6 +88,10 @@ class CaseFeatures:
     convicted_behaviors: list[str] = field(default_factory=list)
     convicted_drug_levels: list[int] = field(default_factory=list)
     max_drug_weight_g: Optional[float] = None  # 主文/事實 中最大「淨重 X 公克」
+    # Number of distinct defendants named in 主文. >1 means the per-judgment
+    # row mixes several people's sentences (and 沒收/§59 flags become
+    # ambiguous) — such rows should be dropped from a per-defendant model.
+    n_defendants: int = 1
 
     # Statutory reductions / enhancements
     art17_1_applied: bool = False   # 毒品§17Ⅰ 供出來源因而查獲
@@ -212,6 +216,15 @@ _DEFENDANT_BOUNDARY_RE = re.compile(
     r"。\s*(?![又再而並亦])[一-龥○Ａ-Ｚ\d]{1,5}\s*"
     r"(?:犯|共同|意圖|施用|販賣|轉讓|運輸|製造|持有|幫助)"
 )
+# Defendant-clause opener: a 1-5 char name (possibly ○-redacted, e.g. 甲○○)
+# at the start of 主文 or just after a 句號, followed by a verb-of-conviction.
+# Continuation markers (又/再/...) are excluded so a single defendant's
+# multiple counts are not miscounted as separate people.
+_DEFENDANT_CLAUSE_RE = re.compile(
+    r"(?:^|。)\s*(?![又再而並亦另])"
+    r"(?P<name>[一-龥○ＯＡ-Ｚ][一-龥○ＯＡ-Ｚ]{0,4})\s*"
+    r"(?:犯|共同|意圖|施用|販賣|轉讓|運輸|製造|持有|幫助|教唆|基於|連續)"
+)
 _PROBATION_RE = re.compile(
     rf"緩\s*刑\s*(?P<years>[{_CN_CHARS}\d]+)\s*年"
 )
@@ -307,6 +320,18 @@ def _check_art17(text: str, citation_re: re.Pattern[str]) -> bool:
             continue
         return True
     return False
+
+
+def _count_defendants(main_text: str) -> int:
+    """Number of distinct defendants named in the 主文.
+
+    Falls back to 1 when no clause opener is recognised (single-defendant
+    judgments where 主文 starts with the offense name, or unusual phrasing).
+    """
+    names = {m.group("name") for m in _DEFENDANT_CLAUSE_RE.finditer(main_text)}
+    # Drop spurious captures that are clearly not names (offense fragments etc.)
+    names = {n for n in names if 1 <= len(n) <= 5}
+    return max(1, len(names))
 
 
 def _find_drug_levels(text: str) -> list[int]:
@@ -501,6 +526,7 @@ def extract_features(record: Record) -> CaseFeatures:
         behaviors=_find_behaviors(behavior_text),
         convicted_behaviors=_find_behaviors(main_text),
         convicted_drug_levels=_find_drug_levels(main_text),
+        n_defendants=_count_defendants(main_text),
         max_drug_weight_g=_extract_max_drug_weight_g(behavior_text),
         art17_1_applied=_check_art17(jfull, _ART17_1_CITATION),
         art17_2_applied=_check_art17(jfull, _ART17_2_CITATION),

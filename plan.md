@@ -279,6 +279,7 @@ AiJudge/
 │   └── processed/             # 特徵化後
 └── tests/
     ├── test_filter.py
+    ├── test_features.py          # n_defendants 等抽取輔助函式
     └── test_rules.py             # 規則引擎 + 法定刑越界率 + 約束裁剪
 ```
 
@@ -314,6 +315,9 @@ AiJudge/
    - 特徵：100% 刑期覆蓋（43 有期徒刑 + 7 拘役），82 件行為偵測、58 件毒品級別偵測
 2. ⏳ **資料回填**：使用者以瀏覽器手動下載 RAR 至 `data/raw/`（server API 500 未修復）
 3. ⏳ 人工標註 100 筆驗證特徵抽取器（已有 `scripts/05_sample_for_labeling.py` + `06_evaluate_labels.py`）
-   - 註：`04_train_baseline.py` 已內建層 4 約束裁剪（預設開啟）+ 法定刑越界率報告。實測 rule-clipped 越界率 = 0.00%；但 **ground-truth 標籤越界率 ~6%**，多為 `convicted_drug_levels` 把非定罪級別也抓進來、或 `sentence_months` 誤抓到數罪併罰應執行刑——待 W3–W4 標註時一併修正定罪抽取精度。
+   - [done] `04_train_baseline.py` 已改為 **walk-forward 時序 CV**（預設 5 fold 擴展視窗，`--holdout` 才是舊的隨機 80/20）+ 層 4 約束裁剪（預設開啟）+ 法定刑越界率報告（gt 標籤 / raw 預測 / clipped 預測三段）。
+   - [done] `features.n_defendants`：偵測 主文 中被告人數；多被告判決預設排除（per-judgment 列會混到多人刑度，`--keep-multi-defendant` 可保留）。
+   - 現況（2023–2026 資料、1441 列、5 fold pooled）：rule-clipped 越界率 = 0.00%；MAE ≈ 2.5 月、±3 月命中 ≈ 88%、±6 月 ≈ 94%。
+   - **殘留 ground-truth 越界率 ~3.9%**：剩下多為 §11 純質淨重加重型未建表、混合罪數的應執行刑、以及簡易判決中 §59/§17 減刑寫在「聲請簡易判決處刑書」附件而 JFULL 看不到——待 W3–W4 標註時一併處理。
 4. ⏳ LLM (Claude API) 抽取 §57 量刑因子（scaffold 在 `scripts/07_llm_extract_factors.py`，待 API key + 標註資料）
 5. ⏳ 擴大至北部 5 地院資料 → 建立基礎模型
