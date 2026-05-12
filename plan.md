@@ -278,7 +278,8 @@ AiJudge/
 │   ├── filtered/              # 基隆毒品案 JSONL
 │   └── processed/             # 特徵化後
 └── tests/
-    └── test_filter.py
+    ├── test_filter.py
+    └── test_rules.py             # 規則引擎 + 法定刑越界率 + 約束裁剪
 ```
 
 **命名備註**：原規劃的 `parser.py` 改為 `records.py`，因 Python 3.9 內建 `parser` 模組（雖已棄用）仍會搶先載入造成 ImportError；模組主要 export 為 `Record` dataclass 與 `iter_records*`，`records` 名稱亦屬精確。
@@ -313,5 +314,6 @@ AiJudge/
    - 特徵：100% 刑期覆蓋（43 有期徒刑 + 7 拘役），82 件行為偵測、58 件毒品級別偵測
 2. ⏳ **資料回填**：使用者以瀏覽器手動下載 RAR 至 `data/raw/`（server API 500 未修復）
 3. ⏳ 人工標註 100 筆驗證特徵抽取器（已有 `scripts/05_sample_for_labeling.py` + `06_evaluate_labels.py`）
+   - 註：`04_train_baseline.py` 已內建層 4 約束裁剪（預設開啟）+ 法定刑越界率報告。實測 rule-clipped 越界率 = 0.00%；但 **ground-truth 標籤越界率 ~6%**，多為 `convicted_drug_levels` 把非定罪級別也抓進來、或 `sentence_months` 誤抓到數罪併罰應執行刑——待 W3–W4 標註時一併修正定罪抽取精度。
 4. ⏳ LLM (Claude API) 抽取 §57 量刑因子（scaffold 在 `scripts/07_llm_extract_factors.py`，待 API key + 標註資料）
 5. ⏳ 擴大至北部 5 地院資料 → 建立基礎模型

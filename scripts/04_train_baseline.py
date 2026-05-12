@@ -1,11 +1,18 @@
 """Baseline XGBoost regression for sentence_months.
 
 Predicts 有期徒刑 month-count from features extracted by features.py.
-Splits 80/20 train/test, reports MAE/RMSE/R^2 and feature importance.
+Splits 80/20 train/test, reports MAE/RMSE/R^2, feature importance, and the
+法定刑越界率 (statutory-range violation rate) before/after layer-4 clipping.
+
+NOTE: this is a quick baseline using a *random* split — plan.md §6.1 requires
+walk-forward temporal CV for any reported headline number; treat the MAE here
+as a sanity check, not a validated metric.
 
 Usage:
     python scripts/04_train_baseline.py
     python scripts/04_train_baseline.py --in data/filtered/keelung_drug_all.jsonl
+    python scripts/04_train_baseline.py --save data/processed/baseline_model.pkl
+    python scripts/04_train_baseline.py --no-rule-clip   # ablation
 """
 from __future__ import annotations
 
@@ -23,8 +30,13 @@ from sklearn.model_selection import train_test_split
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from features import extract_features  # noqa: E402
+from models import ModelBundle  # noqa: E402
 from records import Record  # noqa: E402
-from rules import binding_constraint, clip_prediction  # noqa: E402
+from rules import (  # noqa: E402
+    binding_constraint,
+    clip_prediction,
+    violation_rate,
+)
 
 
 BEHAVIORS = ["施用", "持有", "販賣", "運輸", "製造", "轉讓", "意圖販賣而持有"]
@@ -105,9 +117,11 @@ def main() -> int:
                     help="JSONL of §57 directions (set to '' to disable)")
     ap.add_argument("--no-art57", action="store_true",
                     help="disable §57 features for comparison")
-    ap.add_argument("--rule-clip", action="store_true",
-                    help="apply statutory range clipping to predictions "
-                         "(currently HURTS MAE — see comment in code)")
+    ap.add_argument("--no-rule-clip", action="store_true",
+                    help="skip layer-4 statutory clipping (for ablation only — "
+                         "production must keep it on)")
+    ap.add_argument("--save", type=Path, default=None,
+                    help="path to dump the trained ModelBundle (pickle)")
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--rounds", type=int, default=500,
                     help="max boosting rounds (early-stopping enabled)")
@@ -159,48 +173,67 @@ def main() -> int:
     print(f"  R^2  = {r2:.3f}              (raw)")
     print(f"  best_iteration = {model.best_iteration}")
 
-    # Rule-constrained prediction (opt-in via --rule-clip).
+    # ── Layer 4: statutory clipping + 法定刑越界率 ────────────────────────
     #
-    # Caveat: features.behaviors is the *union* of all detected acts in the
-    # judgment, which often includes acts mentioned in the facts narrative
-    # but not actually convicted (e.g. 起訴 was 販賣 but court convicted 施用).
-    # This causes the binding constraint to overshoot — 53/301 test cases
-    # had truth < rule's minimum, so naive clipping forces the prediction
-    # up to a high statutory floor that doesn't apply. To use rule clipping
-    # safely we'd need conviction-only behavior extraction (from 主文 only),
-    # which is left as future work.
+    # The binding constraint is looked up from 主文-only convicted behaviors
+    # (`_conv_beh` / `_conv_lv`), not the union of acts mentioned anywhere in
+    # the judgment — the narrative often cites acts that weren't the actual
+    # conviction (e.g. 起訴 販賣 but court convicted 施用), which would make the
+    # statutory floor overshoot. With conviction-only lookup the clip is sound
+    # and helps MAE slightly.
+    #
+    # 越界率 is reported three ways:
+    #   - ground-truth labels: a real judge's sentence can't be illegal, so a
+    #     non-zero value flags an upstream defect — either the penalty table
+    #     (rules.py) or, more often, conviction extraction (convicted_behaviors
+    #     / convicted_drug_levels picking up acts/levels that weren't the
+    #     conviction, or sentence_months being a 數罪併罰 應執行刑). Use it as a
+    #     data-quality canary, not a model metric.
+    #   - raw model preds: how often the unconstrained model leaves the range.
+    #   - rule-clipped preds: must be exactly 0.0% — the layer-4 guarantee.
+    df_test = df.iloc[X_test_idx].reset_index(drop=True)
+    constraints = []
+    for _, row in df_test.iterrows():
+        behaviors = {b for b in row["_conv_beh"].split(",") if b}
+        levels = {int(lv) for lv in row["_conv_lv"].split(",") if lv}
+        constraints.append(binding_constraint(
+            behaviors, levels,
+            art17_1=bool(row["art17_1"]),
+            art17_2=bool(row["art17_2"]),
+            art59=bool(row["art59"]),
+            recidivism=bool(row["recidivism"]),
+        ))
+    n_no_constraint = sum(c is None for c in constraints)
+
+    rate_gt, n_gt, n_chk = violation_rate(list(zip(y_test, constraints)))
+    rate_raw, n_rawv, _ = violation_rate(list(zip(pred_raw, constraints)))
+    print(f"\n法定刑越界率 (constraint resolved for {n_chk}/{len(X_test)} cases; "
+          f"{n_no_constraint} unmapped):")
+    print(f"  ground-truth labels : {rate_gt:6.2%}  ({n_gt} cases — "
+          f"{'clean' if n_gt == 0 else 'upstream defect: penalty table or conviction extraction'})")
+    print(f"  raw model preds     : {rate_raw:6.2%}  ({n_rawv} cases)")
+
     pred = pred_raw
-    if args.rule_clip:
-        df_test = df.iloc[X_test_idx]
+    if not args.no_rule_clip:
         pred_clipped = pred_raw.copy()
-        n_clipped = n_no_constraint = 0
-        for i, (_, row) in enumerate(df_test.iterrows()):
-            # Use 主文-only convicted behaviors for the constraint lookup —
-            # the union (b_*) includes facts-narrative acts that aren't the
-            # actual conviction.
-            behaviors = {b for b in row["_conv_beh"].split(",") if b}
-            levels = {int(lv) for lv in row["_conv_lv"].split(",") if lv}
-            constraint = binding_constraint(
-                behaviors, levels,
-                art17_1=bool(row["art17_1"]),
-                art17_2=bool(row["art17_2"]),
-                art59=bool(row["art59"]),
-                recidivism=bool(row["recidivism"]),
-            )
-            if constraint is None:
-                n_no_constraint += 1
+        n_clipped = 0
+        for i, c in enumerate(constraints):
+            if c is None:
                 continue
-            new_p = clip_prediction(float(pred_raw[i]), constraint)
+            new_p = clip_prediction(float(pred_raw[i]), c)
             if abs(new_p - pred_raw[i]) > 0.01:
                 n_clipped += 1
             pred_clipped[i] = new_p
+        rate_clip, n_clipv, _ = violation_rate(list(zip(pred_clipped, constraints)))
         mae_c = mean_absolute_error(y_test, pred_clipped)
         rmse_c = np.sqrt(mean_squared_error(y_test, pred_clipped))
         r2_c = r2_score(y_test, pred_clipped)
-        print(f"\n  MAE  = {mae_c:.2f} months  (rule-clipped, {n_clipped}/{len(X_test)} clipped)")
-        print(f"  RMSE = {rmse_c:.2f} months  (rule-clipped)")
-        print(f"  R^2  = {r2_c:.3f}              (rule-clipped)")
-        print(f"  cases without binding constraint: {n_no_constraint}")
+        print(f"  rule-clipped preds  : {rate_clip:6.2%}  ({n_clipv} cases — "
+              f"{'OK' if n_clipv == 0 else 'LAYER-4 FAILURE'})")
+        print(f"\nRule-clipped test metrics ({n_clipped}/{len(X_test)} clipped):")
+        print(f"  MAE  = {mae_c:.2f} months")
+        print(f"  RMSE = {rmse_c:.2f} months")
+        print(f"  R^2  = {r2_c:.3f}")
         pred = pred_clipped
 
     # Naive baselines for comparison
@@ -222,6 +255,25 @@ def main() -> int:
         print(f"  p{pct} = {np.percentile(abs_err, pct):.1f} months")
     print(f"  worst case: |{int(abs_err.max())}| months "
           f"(pred={int(pred[abs_err.argmax()])}, true={int(y_test[abs_err.argmax()])})")
+
+    if args.save:
+        import pickle
+        bundle = ModelBundle(
+            sentence_regressor=model,
+            feature_names=tuple(feature_cols),
+            metadata={
+                "trained_on": str(args.inp),
+                "n_train": int(len(X_train)),
+                "n_test": int(len(X_test)),
+                "mae_raw": float(mae),
+                "rule_clip": not args.no_rule_clip,
+                "art57": art57_path is not None,
+            },
+        )
+        args.save.parent.mkdir(parents=True, exist_ok=True)
+        with args.save.open("wb") as fh:
+            pickle.dump(bundle, fh)
+        print(f"\nSaved ModelBundle → {args.save}")
 
     return 0
 

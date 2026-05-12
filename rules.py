@@ -124,6 +124,35 @@ def clip_prediction(pred_months: float, constraint: SentencingConstraint) -> flo
     return max(constraint.min_months, min(pred_months, constraint.max_months))
 
 
+# Floating-point slack for boundary comparisons (reductions can yield .5-month
+# fractions; statutory bounds are integer months).
+_BOUND_EPS = 1e-6
+
+
+def is_within(months: float, constraint: SentencingConstraint) -> bool:
+    """Whether a sentence (in months) lies inside the statutory range."""
+    return (constraint.min_months - _BOUND_EPS
+            <= months
+            <= constraint.max_months + _BOUND_EPS)
+
+
+def violation_rate(
+    sentences_and_constraints: list[tuple[float, Optional[SentencingConstraint]]],
+) -> tuple[float, int, int]:
+    """法定刑越界率 over a batch.
+
+    Cases with no applicable constraint (``None``) are excluded from the
+    denominator — they cannot be judged in or out of range.
+
+    Returns ``(rate, n_violations, n_with_constraint)``.
+    """
+    checked = [(m, c) for m, c in sentences_and_constraints if c is not None]
+    if not checked:
+        return 0.0, 0, 0
+    n_viol = sum(1 for m, c in checked if not is_within(m, c))
+    return n_viol / len(checked), n_viol, len(checked)
+
+
 def aggregate_sentence_bounds(individual_months: list[float]) -> tuple[float, float]:
     """刑法§51 合併定刑上下限。
 

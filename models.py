@@ -14,7 +14,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Sequence
 
-from rules import SentencingConstraint, clip_prediction
+from rules import SentencingConstraint, clip_prediction, is_within
 
 
 @dataclass
@@ -47,25 +47,84 @@ def train_sentence_regressor(X, y, sample_weight=None, **kwargs):
     raise NotImplementedError("Phase 3")
 
 
+def constrain_sentence(
+    raw_months: dict[str, float],
+    constraint: SentencingConstraint | None,
+) -> dict:
+    """Clip raw quantile predictions to the statutory range (layer 4).
+
+    ``raw_months`` maps quantile keys (e.g. ``"p25"``, ``"p50"``, ``"p75"``)
+    to raw model outputs in months. When ``constraint`` is ``None`` (no entry
+    in the penalty table for this behavior/level) the raw values pass through
+    unchanged and ``rule_applied`` is ``False``.
+
+    The clipped output is guaranteed to satisfy :func:`rules.is_within` for
+    every quantile — i.e. the per-prediction 法定刑越界率 is 0 by construction.
+
+    Returns ``{"p25_months", "p50_months", "p75_months", ...,
+    "raw": {...}, "rule_applied": bool, "clipped": bool, "constraint": {...}}``.
+    """
+    out: dict = {"raw": dict(raw_months)}
+    if constraint is None:
+        for k, v in raw_months.items():
+            out[f"{k}_months"] = float(v)
+        out["rule_applied"] = False
+        out["clipped"] = False
+        out["constraint"] = None
+        return out
+
+    clipped_any = False
+    for k, v in raw_months.items():
+        cv = clip_prediction(float(v), constraint)
+        if abs(cv - float(v)) > 1e-6:
+            clipped_any = True
+        out[f"{k}_months"] = cv
+    # Keep quantiles monotone after independent clipping.
+    keys = [k for k in ("p25", "p50", "p75") if f"{k}_months" in out]
+    for lo, hi in zip(keys, keys[1:]):
+        if out[f"{hi}_months"] < out[f"{lo}_months"]:
+            out[f"{hi}_months"] = out[f"{lo}_months"]
+    assert all(is_within(out[f"{k}_months"], constraint) for k in raw_months)
+    out["rule_applied"] = True
+    out["clipped"] = clipped_any
+    out["constraint"] = {
+        "min_months": constraint.min_months,
+        "max_months": constraint.max_months,
+        "includes_life": constraint.includes_life,
+        "includes_capital": constraint.includes_capital,
+    }
+    return out
+
+
 def predict_with_constraints(
     bundle: ModelBundle,
     features: dict,
-    constraint: SentencingConstraint,
+    constraint: SentencingConstraint | None,
 ) -> dict:
-    """Predict sentence and clip to statutory range.
+    """Predict sentence quantiles from a trained bundle and clip to statute.
 
-    Output format:
-        {
-          "p25_months": ...,
-          "p50_months": ...,
-          "p75_months": ...,
-          "probation_prob": ...,
-          "behavior": "販賣",
-        }
-
-    TODO phase 3.
+    Thin wrapper: runs the regressors in ``bundle`` over ``features`` to get
+    raw ``p25/p50/p75`` months, then defers to :func:`constrain_sentence`.
+    Also attaches ``behavior`` and ``probation_prob`` when those heads exist.
     """
-    raise NotImplementedError("Phase 3")
+    if bundle.sentence_regressor is None:
+        raise ValueError("bundle has no sentence_regressor")
+    import numpy as np
+
+    x = np.asarray([[float(features[name]) for name in bundle.feature_names]],
+                   dtype=float)
+    raw = {"p50": float(bundle.sentence_regressor.predict(x)[0])}
+    if bundle.sentence_quantile_p25 is not None:
+        raw["p25"] = float(bundle.sentence_quantile_p25.predict(x)[0])
+    if bundle.sentence_quantile_p75 is not None:
+        raw["p75"] = float(bundle.sentence_quantile_p75.predict(x)[0])
+    result = constrain_sentence(raw, constraint)
+    if bundle.probation_classifier is not None:
+        result["probation_prob"] = float(
+            bundle.probation_classifier.predict_proba(x)[0, 1])
+    if bundle.behavior_classifier is not None:
+        result["behavior"] = bundle.behavior_classifier.predict(x)[0]
+    return result
 
 
 def explain_prediction(bundle: ModelBundle, features: dict) -> dict:
