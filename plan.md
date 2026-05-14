@@ -313,13 +313,16 @@ AiJudge/
    - 解壓：Windows 內建 `bsdtar`（`C:\Windows\System32\tar.exe`）原生支援 RAR
    - 過濾：50 基隆毒品案（KL prefix 過濾，排除 Yunlin/Shilin 洩漏）
    - 特徵：100% 刑期覆蓋（43 有期徒刑 + 7 拘役），82 件行為偵測、58 件毒品級別偵測
-2. ⏳ **資料回填**：使用者以瀏覽器手動下載 RAR 至 `data/raw/`（server API 500 未修復）
-3. ⏳ 人工標註 100 筆驗證特徵抽取器（已有 `scripts/05_sample_for_labeling.py` + `06_evaluate_labels.py`）
+2. **資料回填**：使用者以瀏覽器手動下載 RAR 至 `data/raw/`（server API 500 未修復）
+3. 人工標註 100 筆驗證特徵抽取器（已有 `scripts/05_sample_for_labeling.py` + `06_evaluate_labels.py`）
    - [done] `04_train_baseline.py` 已改為 **walk-forward 時序 CV**（預設 5 fold 擴展視窗，`--holdout` 才是舊的隨機 80/20）+ 層 4 約束裁剪（預設開啟）+ 法定刑越界率報告（gt 標籤 / raw 預測 / clipped 預測三段）。
    - [done] `features.n_defendants`：偵測 主文 中被告人數；多被告判決預設排除（per-judgment 列會混到多人刑度，`--keep-multi-defendant` 可保留）。
    - [done] 數罪併罰處理：`features.n_sentence_counts` / `is_aggregate_sentence`；多罪/應執行刑的列改用 `rules.aggregate_only_constraint()`（只強制 §51 三十年上限，因為單罪刑度區間無法約束合併刑）。
    - [done] `features.is_attempt`（主文「未遂」）→ `rules` 視為 §25Ⅱ 得減輕（與 §59 同，上下限各 ×½）；`binding_constraint(summary=True)` 對簡易判決把下限 ×½（§59 常只記於「聲請簡易判決處刑書」附件，JFULL 看不到）。`n_sentence_counts` / `is_aggregate_sentence` / `is_attempt` 同時當成模型特徵。
-   - 現況（2023–2026 資料、1441 列、5 fold pooled）：rule-clipped 越界率 = 0.00%；ground-truth 越界率 1.0%；MAE ≈ 2.4 月、±3 月命中 ≈ 89%、±6 月 ≈ 95%。
-   - **殘留 ~1.0% ground-truth 越界**：幾乎都是販賣/運輸重罪被判到法定最低刑以下（依法必有 §59/§17 減刑，但偵審自白以外的 §59 我們的偵測器太保守抓不到，且多被告判決中的 §17/§59 討論會被全文偵測誤算到別人身上），外加 1 件 §11 持有純質淨重加重型未建表——皆屬已知難點，需 per-defendant 範圍化的減刑偵測 + 法律專家補表。
-4. ⏳ LLM (Claude API) 抽取 §57 量刑因子（scaffold 在 `scripts/07_llm_extract_factors.py`，待 API key + 標註資料）
-5. ⏳ 擴大至北部 5 地院資料 → 建立基礎模型
+   - 現況（**2018-01 ~ 2026-02、98 個月、5,809 件 → 5,410 列（單被告）**、5 fold pooled n=4,509）：rule-clipped 越界率 = **0.00%**；ground-truth 越界率 **1.22%**；MAE **2.18 月**（raw 2.34）、±3 月命中 **91.4%**、±6 月 **95.4%**、R² 0.580。
+   - 最後一折（2024-01 ~ 2026-02 測試，train 4,508）：MAE 2.47 月、R² 0.622、±6 月 93.6%——對近期判決泛化穩定，無明顯時序漂移。
+   - Per-primary-behavior MAE（pooled）：施用 0.99 / 持有 1.06 / 轉讓 2.99 / 販賣 7.03 / 意圖販賣而持有 12.05 / 製造 22.18 / 運輸 29.21。重罪 MAE 大、樣本仍稀（n ≤ 47）。
+   - **殘留 ~1.22% ground-truth 越界**：幾乎都是販賣/運輸重罪被判到法定最低刑以下（依法必有 §59/§17 減刑，但偵審自白以外的 §59 我們的偵測器太保守抓不到，且多被告判決中的 §17/§59 討論會被全文偵測誤算到別人身上），外加 §11 持有純質淨重加重型未建表——皆屬已知難點，需 per-defendant 範圍化的減刑偵測 + 法律專家補表。
+   - 擴壓:`scripts/01b_extract_rars.py` 已支援 `WORKERS` env var 並行（ThreadPoolExecutor + 7z subprocess）;`RAR_DIR` / `OUT_DIR` / `EXTRACT_LOG` 可 env var 覆寫(讓 RAR 跟解出檔放到另一顆磁碟)。實測 12 核機 WORKERS=6 解 30 個月約 50 分鐘(序列估 4 小時)。
+4. LLM (Claude API) 抽取 §57 量刑因子（scaffold 在 `scripts/07_llm_extract_factors.py`，待 API key + 標註資料）
+5. 擴大至北部 5 地院資料 → 建立基礎模型

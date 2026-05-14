@@ -215,6 +215,7 @@ def evaluate_fold(
     return {
         "model": model, "feat_cols": feat_cols,
         "n_train": int(len(tr_idx)), "n_test": int(len(te_idx)),
+        "te_idx": np.asarray(te_idx),
         "y_true": y_te, "y_pred": pred, "y_pred_raw": pred_raw,
         "mae": mean_absolute_error(y_te, pred),
         "mae_raw": mean_absolute_error(y_te, pred_raw),
@@ -300,6 +301,40 @@ def _print_pooled(results: list[dict]) -> None:
         f"p{p}={np.percentile(abs_err, p):.1f}" for p in (50, 75, 90, 95, 99)))
 
 
+_BEHAVIOR_PRIORITY = ["運輸", "製造", "販賣", "意圖販賣而持有", "轉讓", "持有", "施用"]
+
+
+def _primary_behavior(row) -> str:
+    for b in _BEHAVIOR_PRIORITY:
+        if row.get(f"b_{b}", 0):
+            return b
+    return "(其他)"
+
+
+def _print_by_behavior(df: pd.DataFrame, results: list[dict]) -> None:
+    """Per-primary-behavior MAE across pooled walk-forward test rows."""
+    if not results:
+        return
+    buckets: dict[str, list[tuple[float, float]]] = {}
+    for r in results:
+        te = df.iloc[r["te_idx"]]
+        for (_, row), yt, yp in zip(te.iterrows(), r["y_true"], r["y_pred"]):
+            b = _primary_behavior(row)
+            buckets.setdefault(b, []).append((float(yt), float(yp)))
+    print("\nPer-primary-behavior MAE (pooled across folds):")
+    print(f"  {'behavior':<20} {'n':>5}  {'MAE':>6}  {'median |err|':>12}")
+    for b in _BEHAVIOR_PRIORITY + ["(其他)"]:
+        if b not in buckets:
+            continue
+        pairs = buckets[b]
+        n = len(pairs)
+        yt = np.array([p[0] for p in pairs])
+        yp = np.array([p[1] for p in pairs])
+        mae = mean_absolute_error(yt, yp)
+        med = float(np.median(np.abs(yp - yt)))
+        print(f"  {b:<20} {n:>5}  {mae:>6.2f}  {med:>12.2f}")
+
+
 def _print_importance(model: xgb.XGBRegressor, feat_cols: list[str], top: int = 15) -> None:
     print(f"\nTop {top} features by gain importance (last/full-data model):")
     importance = model.get_booster().get_score(importance_type="gain")
@@ -373,6 +408,9 @@ def main() -> int:
                                rule_clip=rule_clip, seed=args.seed, rounds=args.rounds)
         _print_pooled(results)
         last_model = results[-1]["model"] if results else None
+
+    if not args.holdout:
+        _print_by_behavior(df, results)
 
     if last_model is not None:
         _print_importance(last_model, feat_cols)

@@ -5,20 +5,25 @@ import os
 import shutil
 import subprocess
 import sys
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 SEVEN_ZIP = r"C:\Program Files\NVIDIA Corporation\NVIDIA GeForce Experience\7z.exe"
-RAR_DIR = r"C:\Users\alex2\Desktop\vsCode\AiJudge\data\raw"
-OUT_DIR = r"C:\Users\alex2\Desktop\vsCode\AiJudge\data\extracted"
-LOG = r"C:\Users\alex2\Desktop\vsCode\AiJudge\data\extract_progress.log"
+RAR_DIR = os.environ.get("RAR_DIR", r"C:\Users\alex2\Desktop\vsCode\AiJudge\data\raw")
+OUT_DIR = os.environ.get("OUT_DIR", r"C:\Users\alex2\Desktop\vsCode\AiJudge\data\extracted")
+LOG = os.environ.get("EXTRACT_LOG", r"C:\Users\alex2\Desktop\vsCode\AiJudge\data\extract_progress.log")
 MIN_FREE_GB = 1.0   # 低於此值中止避免爆盤
+WORKERS = int(os.environ.get("WORKERS", "1"))
+_LOG_LOCK = threading.Lock()
 
 
 def log(msg):
     line = f"[{time.strftime('%H:%M:%S')}] {msg}"
-    print(line, flush=True)
-    with open(LOG, "a", encoding="utf-8") as f:
-        f.write(line + "\n")
+    with _LOG_LOCK:
+        print(line, flush=True)
+        with open(LOG, "a", encoding="utf-8") as f:
+            f.write(line + "\n")
 
 
 def list_todo():
@@ -69,28 +74,33 @@ def main():
         log(f"7z 不存在: {SEVEN_ZIP}")
         sys.exit(1)
 
-    todo = list_todo()
-    log(f"共 {len(todo)} 個 RAR 候選（含已解的）")
+    todo_all = list_todo()
+    # 預先過濾已解的
+    todo = []
+    skip_count = 0
+    for month, rar in todo_all:
+        out_month = os.path.join(OUT_DIR, month)
+        if os.path.exists(out_month) and count_files(out_month) > 0:
+            skip_count += 1
+            continue
+        if os.path.exists(out_month):
+            shutil.rmtree(out_month, ignore_errors=True)
+        todo.append((month, rar))
+    log(f"共 {len(todo_all)} 個 RAR 候選；待解 {len(todo)}；跳過 {skip_count}；workers={WORKERS}")
 
     total_t0 = time.time()
     done_count = 0
-    skip_count = 0
-    for i, (month, rar) in enumerate(todo, 1):
-        out_month = os.path.join(OUT_DIR, month)
-        if os.path.exists(out_month):
-            n = count_files(out_month)
-            if n > 0:
-                skip_count += 1
-                continue
-            else:
-                shutil.rmtree(out_month, ignore_errors=True)
+    abort = threading.Event()
 
-        # 空間檢查
+    def worker(idx_month_rar):
+        i, (month, rar) = idx_month_rar
+        if abort.is_set():
+            return ("aborted", month)
         fg = free_gb(OUT_DIR)
         if fg < MIN_FREE_GB:
-            log(f"剩餘 {fg:.2f} GB < {MIN_FREE_GB} GB，中止以免爆盤")
-            break
-
+            log(f"剩餘 {fg:.2f} GB < {MIN_FREE_GB} GB，中止 {month}")
+            abort.set()
+            return ("low_space", month)
         size_mb = os.path.getsize(rar) / 1024 / 1024
         log(f"[{i}/{len(todo)}] {month}  開始（RAR {size_mb:.0f} MB，剩 {fg:.1f} GB）")
         t0 = time.time()
@@ -100,11 +110,19 @@ def main():
             log(f"[{i}/{len(todo)}] {month}  7z 失敗 rc={rc}")
             if se:
                 log(f"  stderr: {se.strip()[:300]}")
-            break
+            return ("fail", month)
+        out_month = os.path.join(OUT_DIR, month)
         n = count_files(out_month)
         out_mb = folder_size_mb(out_month)
         log(f"[{i}/{len(todo)}] {month}  完成（{dur:.0f}s, {n} files, {out_mb:.0f} MB）")
-        done_count += 1
+        return ("ok", month)
+
+    with ThreadPoolExecutor(max_workers=WORKERS) as ex:
+        futures = [ex.submit(worker, (i, mr)) for i, mr in enumerate(todo, 1)]
+        for fut in as_completed(futures):
+            status, _ = fut.result()
+            if status == "ok":
+                done_count += 1
 
     total_dur = time.time() - total_t0
     log(f"=== 結束 新解 {done_count} 跳過 {skip_count} 耗時 {total_dur:.0f}s ===")
