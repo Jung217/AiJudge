@@ -24,7 +24,7 @@ from typing import Any, Optional
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
-from models import ModelBundle, predict_with_constraints
+from models import ModelBundle, explain_prediction, predict_with_constraints
 from rules import aggregate_only_constraint, binding_constraint
 
 
@@ -125,6 +125,21 @@ class PredictResponse(BaseModel):
     disclaimer: str
 
 
+class ContributionItem(BaseModel):
+    name: str
+    value: float
+    contribution_months: float
+
+
+class ExplainResponse(BaseModel):
+    prediction: PredictionOut
+    constraint: Optional[ConstraintOut]
+    base_value: float
+    predicted_raw: float
+    top_contributions: list[ContributionItem]
+    disclaimer: str
+
+
 def _build_features(c: CaseInput) -> dict[str, float]:
     """Map a CaseInput to the bundle's feature-name → value dict.
 
@@ -192,30 +207,55 @@ def version() -> dict:
     }
 
 
+def _predict_payload(c: CaseInput):
+    feats = _build_features(c)
+    constraint = _constraint_for(c)
+    result = predict_with_constraints(_state["bundle"], feats, constraint)
+    return feats, constraint, result
+
+
+def _wrap_prediction(result, constraint) -> tuple[PredictionOut, Optional[ConstraintOut]]:
+    pred = PredictionOut(
+        p25_months=result.get("p25_months"),
+        p50_months=result["p50_months"],
+        p75_months=result.get("p75_months"),
+        raw=result["raw"],
+        rule_applied=result["rule_applied"],
+        clipped=result["clipped"],
+        probation_prob=result.get("probation_prob"),
+        probation_predicted=result.get("probation_predicted"),
+        probation_threshold=result.get("probation_threshold"),
+    )
+    cons = (ConstraintOut(
+        min_months=constraint.min_months,
+        max_months=constraint.max_months,
+        includes_life=constraint.includes_life,
+        includes_capital=constraint.includes_capital,
+    ) if constraint else None)
+    return pred, cons
+
+
 @app.post("/predict", response_model=PredictResponse)
 def predict(c: CaseInput) -> PredictResponse:
     if "bundle" not in _state:
         raise HTTPException(status_code=503, detail="model not loaded")
-    feats = _build_features(c)
-    constraint = _constraint_for(c)
-    result = predict_with_constraints(_state["bundle"], feats, constraint)
-    return PredictResponse(
-        prediction=PredictionOut(
-            p25_months=result.get("p25_months"),
-            p50_months=result["p50_months"],
-            p75_months=result.get("p75_months"),
-            raw=result["raw"],
-            rule_applied=result["rule_applied"],
-            clipped=result["clipped"],
-            probation_prob=result.get("probation_prob"),
-            probation_predicted=result.get("probation_predicted"),
-            probation_threshold=result.get("probation_threshold"),
-        ),
-        constraint=ConstraintOut(
-            min_months=constraint.min_months,
-            max_months=constraint.max_months,
-            includes_life=constraint.includes_life,
-            includes_capital=constraint.includes_capital,
-        ) if constraint else None,
+    _, constraint, result = _predict_payload(c)
+    pred, cons = _wrap_prediction(result, constraint)
+    return PredictResponse(prediction=pred, constraint=cons, disclaimer=DISCLAIMER)
+
+
+@app.post("/explain", response_model=ExplainResponse)
+def explain(c: CaseInput, top: int = 10) -> ExplainResponse:
+    if "bundle" not in _state:
+        raise HTTPException(status_code=503, detail="model not loaded")
+    feats, constraint, result = _predict_payload(c)
+    expl = explain_prediction(_state["bundle"], feats, top=top)
+    pred, cons = _wrap_prediction(result, constraint)
+    return ExplainResponse(
+        prediction=pred,
+        constraint=cons,
+        base_value=expl["base_value"],
+        predicted_raw=expl["predicted_raw"],
+        top_contributions=[ContributionItem(**c) for c in expl["top_contributions"]],
         disclaimer=DISCLAIMER,
     )

@@ -47,7 +47,7 @@
 | `scripts/06_evaluate_labels.py` | features.py 對 ground-truth 評估 |
 | `scripts/07_llm_extract_factors.py` | §57 量刑因子 Claude API 抽取(prompt cache + resume)|
 | `data/processed/art57_factors.jsonl` | §57 因子（5 sub-agent 平行抽 1,598 件）|
-| `app.py` | FastAPI 服務:`/health` / `/version` / `/predict`,回傳 p25-p50-p75-緩刑機率 + 法定刑度 + 免責聲明 |
+| `app.py` | FastAPI 服務:`/health` / `/version` / `/predict` / `/explain`,回傳 p25-p50-p75-緩刑機率 + 法定刑度 + SHAP per-feature 拆解 + 免責聲明 |
 
 ## 安裝
 
@@ -93,6 +93,10 @@ uvicorn app:app --reload --port 8000
 # 試打:
 curl -X POST http://127.0.0.1:8000/predict -H "Content-Type: application/json" \
   -d '{"behaviors":["施用"],"drug_levels":[2],"can_convert_to_fine":true,"jcase":"簡"}'
+
+# 8. SHAP 解釋(top=8 個對該預測月數影響最大的特徵)
+curl -X POST "http://127.0.0.1:8000/explain?top=8" -H "Content-Type: application/json" \
+  -d '{"behaviors":["販賣"],"drug_levels":[2],"art17_2":true,"art59":true}'
 ```
 
 ## 參考

@@ -202,8 +202,12 @@
 
 ### 6.3 解釋性
 
-- SHAP value 輸出各特徵對刑期的增減
-- 誤差最大 10% 案件人工覆核，建立錯誤登記
+- [done] SHAP value 輸出各特徵對刑期的增減:`models.explain_prediction`
+  用 TreeExplainer (tree_path_dependent) 對 p50 head 跑,回傳
+  `{base_value, predicted_raw, top_contributions: [{name, value,
+  contribution_months}, ...]}`。可加法可加性:`base + Σ contrib ≈ raw`。
+  服務端 `POST /explain?top=N` 暴露。
+- 誤差最大 10% 案件人工覆核，建立錯誤登記:TODO
 
 ## 7. 第五階段：部署與治理（2 週）
 

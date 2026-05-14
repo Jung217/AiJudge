@@ -98,3 +98,34 @@ def test_predict_response_always_carries_disclaimer(client):
     assert "disclaimer" in body
     assert "不可" in body["disclaimer"]
     assert "法律建議" in body["disclaimer"]
+
+
+def test_explain_top_contribs_sum_to_predicted(client):
+    """SHAP 加法可加性檢查:base_value + Σ contributions ≈ predicted_raw。
+    我們只回 top-N,但 top=200 應能涵蓋所有 features。"""
+    r = client.post("/explain?top=200", json={
+        "behaviors": ["持有"], "drug_levels": [2], "art17_2": True,
+    })
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["base_value"] is not None
+    contribs = body["top_contributions"]
+    assert len(contribs) > 0
+    assert all("name" in c and "contribution_months" in c for c in contribs)
+    total = body["base_value"] + sum(c["contribution_months"] for c in contribs)
+    assert abs(total - body["predicted_raw"]) < 1e-3, (
+        f"shap additive check failed: base + sum = {total}, "
+        f"raw = {body['predicted_raw']}")
+    # Top contributions should be sorted by |value| descending
+    abs_vals = [abs(c["contribution_months"]) for c in contribs]
+    assert abs_vals == sorted(abs_vals, reverse=True)
+
+
+def test_explain_returns_disclaimer_and_prediction(client):
+    r = client.post("/explain?top=5", json={
+        "behaviors": ["販賣"], "drug_levels": [2], "art17_2": True,
+    })
+    body = r.json()
+    assert "disclaimer" in body
+    assert body["prediction"]["p50_months"] > 0
+    assert len(body["top_contributions"]) == 5

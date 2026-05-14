@@ -133,6 +133,53 @@ def predict_with_constraints(
     return result
 
 
-def explain_prediction(bundle: ModelBundle, features: dict) -> dict:
-    """SHAP-based per-feature contribution. TODO phase 4."""
-    raise NotImplementedError("Phase 4")
+def explain_prediction(bundle: ModelBundle, features: dict,
+                        top: int = 10) -> dict:
+    """SHAP-based per-feature contribution for the p50 (median) head.
+
+    Returns the top-``top`` features by absolute SHAP value, each item a tuple
+    ``(name, value, contribution_months)``:
+      - ``value`` is the input feature value
+      - ``contribution_months`` is the additive shift this feature contributes
+        to the predicted month-count (positive → raised the sentence)
+    Also returns ``base_value`` (model expected value) and ``predicted_raw``
+    so callers can verify ``base_value + sum(contributions) ≈ predicted_raw``.
+
+    Uses ``TreeExplainer(feature_perturbation="tree_path_dependent")`` so no
+    background dataset is needed.
+    """
+    if bundle.sentence_regressor is None:
+        raise ValueError("bundle has no sentence_regressor")
+    import numpy as np
+    import shap
+
+    x = np.asarray([[float(features[name]) for name in bundle.feature_names]],
+                   dtype=float)
+    explainer = shap.TreeExplainer(
+        bundle.sentence_regressor,
+        feature_perturbation="tree_path_dependent",
+    )
+    sv = explainer.shap_values(x)
+    contribs = sv[0] if sv.ndim == 2 else sv
+    base = float(explainer.expected_value
+                  if np.ndim(explainer.expected_value) == 0
+                  else explainer.expected_value[0])
+    predicted_raw = float(bundle.sentence_regressor.predict(x)[0])
+
+    ranked = sorted(
+        enumerate(contribs),
+        key=lambda kv: -abs(kv[1]),
+    )[:top]
+    items = [
+        {
+            "name": bundle.feature_names[i],
+            "value": float(x[0, i]),
+            "contribution_months": float(c),
+        }
+        for i, c in ranked
+    ]
+    return {
+        "base_value": base,
+        "predicted_raw": predicted_raw,
+        "top_contributions": items,
+    }
