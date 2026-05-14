@@ -319,9 +319,12 @@ AiJudge/
    - [done] `features.n_defendants`：偵測 主文 中被告人數；多被告判決預設排除（per-judgment 列會混到多人刑度，`--keep-multi-defendant` 可保留）。
    - [done] 數罪併罰處理：`features.n_sentence_counts` / `is_aggregate_sentence`；多罪/應執行刑的列改用 `rules.aggregate_only_constraint()`（只強制 §51 三十年上限，因為單罪刑度區間無法約束合併刑）。
    - [done] `features.is_attempt`（主文「未遂」）→ `rules` 視為 §25Ⅱ 得減輕（與 §59 同，上下限各 ×½）；`binding_constraint(summary=True)` 對簡易判決把下限 ×½（§59 常只記於「聲請簡易判決處刑書」附件，JFULL 看不到）。`n_sentence_counts` / `is_aggregate_sentence` / `is_attempt` 同時當成模型特徵。
-   - 現況（**2018-01 ~ 2026-02、98 個月、5,809 件 → 5,410 列（單被告）**、5 fold pooled n=4,509）：rule-clipped 越界率 = **0.00%**；ground-truth 越界率 **1.22%**；MAE **2.18 月**（raw 2.34）、±3 月命中 **91.4%**、±6 月 **95.4%**、R² 0.580。
-   - 最後一折（2024-01 ~ 2026-02 測試，train 4,508）：MAE 2.47 月、R² 0.622、±6 月 93.6%——對近期判決泛化穩定，無明顯時序漂移。
-   - Per-primary-behavior MAE（pooled）：施用 0.99 / 持有 1.06 / 轉讓 2.99 / 販賣 7.03 / 意圖販賣而持有 12.05 / 製造 22.18 / 運輸 29.21。重罪 MAE 大、樣本仍稀（n ≤ 47）。
+   - [done] **分層 bundle（plan §5.2）**：除既有 `sentence_regressor`（中位數）外，新增 (a) p25 / p75 分位數頭（XGBoost 2.x `reg:quantileerror`，與中位數模型共用超參數），(b) `probation_classifier`（XGBClassifier on `features.probation_granted`，新增為布林欄位＋3 個 unit test）。`ModelBundle` 四個欄位皆於 `--save` 時填入；`models.predict_with_constraints` 一次回傳 `{p25_months, p50_months, p75_months, probation_prob}` 並由 `constrain_sentence` 完成裁剪後的單調性。
+   - 現況（**2018-01 ~ 2026-02、98 個月、5,809 件 → 5,410 列（單被告）**、5 fold pooled n=4,509）：rule-clipped 越界率 = **0.00%**；ground-truth 越界率 **1.22%**；MAE **2.20 月**（raw 2.34）、±3 月命中 **91.0%**、±6 月 **95.3%**、R² 0.589。
+   - 分位數頭：pooled pinball p25 = **0.80** / p50 = **1.10** / p75 = **1.02**；coverage [p25, p75] = **44.9%**（理論 50%，略保守）；raw 越階率 (p25>p50 or p50>p75) **15.5%**，clipped 後 0%（`constrain_sentence` 後一步單調化保證）。
+   - 緩刑分類器：base rate = **0.91%**（毒品案緩刑罕見）；pooled accuracy **58.1%**、precision **1.5%**、recall **70.7%**、PR-AUC **0.274**（顯著高於 base rate，但精度仍受極度類別不平衡所限）。
+   - 最後一折（2024-01 ~ 2026-02 測試，train 4,508）：MAE 2.48 月、R² 0.657、±6 月 93.2%——對近期判決泛化穩定，無明顯時序漂移。
+   - Per-primary-behavior MAE（pooled）：施用 1.00 / 持有 1.08 / 轉讓 4.50 / 販賣 7.09 / 意圖販賣而持有 12.05 / 製造 22.07 / 運輸 28.39。重罪 MAE 大、樣本仍稀（n ≤ 47）。
    - **殘留 ~1.22% ground-truth 越界**：幾乎都是販賣/運輸重罪被判到法定最低刑以下（依法必有 §59/§17 減刑，但偵審自白以外的 §59 我們的偵測器太保守抓不到，且多被告判決中的 §17/§59 討論會被全文偵測誤算到別人身上），外加 §11 持有純質淨重加重型未建表——皆屬已知難點，需 per-defendant 範圍化的減刑偵測 + 法律專家補表。
    - 擴壓:`scripts/01b_extract_rars.py` 已支援 `WORKERS` env var 並行（ThreadPoolExecutor + 7z subprocess）;`RAR_DIR` / `OUT_DIR` / `EXTRACT_LOG` 可 env var 覆寫(讓 RAR 跟解出檔放到另一顆磁碟)。實測 12 核機 WORKERS=6 解 30 個月約 50 分鐘(序列估 4 小時)。
 4. LLM (Claude API) 抽取 §57 量刑因子（scaffold 在 `scripts/07_llm_extract_factors.py`，待 API key + 標註資料）

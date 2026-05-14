@@ -110,6 +110,7 @@ class CaseFeatures:
     sentence_months: Optional[int] = None       # 有期徒刑 月數
     detention_days: Optional[int] = None        # 拘役 日數（施用/持有輕案常見）
     probation_months: Optional[int] = None
+    probation_granted: bool = False              # 主文 宣告緩刑 (binary label)
     fine_ntd: Optional[int] = None               # TODO v2
     can_convert_to_fine: bool = False
 
@@ -556,5 +557,6 @@ def extract_features(record: Record) -> CaseFeatures:
         sentence_months=sentence_months,
         detention_days=_extract_detention_days(main_text),
         probation_months=_extract_probation_months(main_text),
+        probation_granted=bool(_PROBATION_RE.search(main_text)),
         can_convert_to_fine="易科罰金" in main_text,
     )

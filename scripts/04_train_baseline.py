@@ -1,11 +1,12 @@
-"""Baseline XGBoost regression for sentence_months.
+"""Layered baseline (plan.md §5.2) — sentence quantiles + probation classifier.
 
-Predicts 有期徒刑 month-count from features extracted by features.py and
-evaluates it with **walk-forward temporal cross-validation** (plan.md §6.1):
-the test fold is always strictly later than its training data — a random split
-is forbidden because adjacent-in-time judgments leak. For each fold it reports
-MAE, ±3-month / ±6-month hit rates, and the 法定刑越界率 before/after layer-4
-statutory clipping (which must be 0% after clipping).
+Predicts (p25, p50, p75) months of 有期徒刑 via three XGBoost quantile heads
+(``reg:quantileerror``) sharing the same feature matrix, plus an XGBClassifier
+head for 緩刑. Evaluated with **walk-forward temporal cross-validation** (plan
+§6.1) — the test fold is always strictly later than its training data. For
+each fold the regressor reports MAE / pinball / coverage and the 法定刑越界率
+before/after layer-4 statutory clipping (must be 0% after clipping); the
+classifier reports accuracy / precision / recall / PR-AUC vs. base rate.
 
 Multi-defendant judgments (n_defendants > 1 in 主文) are dropped by default:
 the per-judgment row mixes several people's sentences and 沒收/§59 flags become
@@ -28,7 +29,14 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import xgboost as xgb
-from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+from sklearn.metrics import (
+    average_precision_score,
+    mean_absolute_error,
+    mean_squared_error,
+    precision_score,
+    r2_score,
+    recall_score,
+)
 from sklearn.model_selection import train_test_split
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -103,6 +111,9 @@ def build_dataframe(jsonl_path: Path, art57_path: Path | None) -> pd.DataFrame:
                 "_summary": int("簡" in rec.jcase),
                 "_conv_beh": ",".join(f.convicted_behaviors),   # rule-clip lookup
                 "_conv_lv": ",".join(map(str, f.convicted_drug_levels)),
+                # Probation label (binary target for the §74 classifier head).
+                # Underscore-prefixed → never enters X (leakage check).
+                "_probation": int(f.probation_granted),
             }
             # §57 factors as one-hot per direction (absent → all zeros for that factor)
             factors = art57.get(rec.jid, {})
@@ -142,12 +153,55 @@ def _make_model(seed: int, rounds: int) -> xgb.XGBRegressor:
     )
 
 
-def _fit(model: xgb.XGBRegressor, X_tr, y_tr, val_frac: float = 0.15):
+# XGBoost 2.x quantile regression. ``quantile_alpha`` is the target quantile;
+# ``reg:quantileerror`` minimises the pinball loss at that level. We keep the
+# rest of the hyperparameters in sync with the squared-error median model so
+# any quantile-vs-median gap is attributable to the loss, not capacity.
+def _make_quantile_model(alpha: float, seed: int, rounds: int) -> xgb.XGBRegressor:
+    return xgb.XGBRegressor(
+        n_estimators=rounds,
+        learning_rate=0.05,
+        max_depth=6,
+        subsample=0.8,
+        colsample_bytree=0.8,
+        objective="reg:quantileerror",
+        quantile_alpha=alpha,
+        random_state=seed,
+        early_stopping_rounds=30,
+        eval_metric="mae",
+        tree_method="hist",
+    )
+
+
+def _make_classifier(seed: int, rounds: int, scale_pos_weight: float = 1.0) -> xgb.XGBClassifier:
+    return xgb.XGBClassifier(
+        n_estimators=rounds,
+        learning_rate=0.05,
+        max_depth=5,
+        subsample=0.8,
+        colsample_bytree=0.8,
+        objective="binary:logistic",
+        random_state=seed,
+        early_stopping_rounds=30,
+        eval_metric="aucpr",
+        scale_pos_weight=scale_pos_weight,
+        tree_method="hist",
+    )
+
+
+def _pinball(y_true: np.ndarray, y_pred: np.ndarray, alpha: float) -> float:
+    """Quantile (pinball) loss at level ``alpha``."""
+    diff = np.asarray(y_true) - np.asarray(y_pred)
+    return float(np.mean(np.maximum(alpha * diff, (alpha - 1) * diff)))
+
+
+def _fit(model, X_tr, y_tr, val_frac: float = 0.15):
     """Fit with early stopping on the *tail* of the training rows.
 
     In walk-forward mode X_tr is already time-ordered, so the tail is the most
     recent (still-in-the-past) slice — a legitimate validation set. For the
-    holdout mode the order doesn't matter.
+    holdout mode the order doesn't matter. Works for any XGBoost estimator
+    (regressor or classifier) that accepts ``eval_set``.
     """
     n = len(X_tr)
     if n < 50:
@@ -182,53 +236,120 @@ def _hit_rate(y_true, y_pred, tol: float) -> float:
     return float(np.mean(np.abs(np.asarray(y_pred) - np.asarray(y_true)) <= tol))
 
 
+def _clip_vector(pred_raw: np.ndarray, constraints: list) -> tuple[np.ndarray, int]:
+    """Apply layer-4 statutory clipping; returns (clipped, n_changed)."""
+    out = pred_raw.copy()
+    n = 0
+    for i, c in enumerate(constraints):
+        if c is None:
+            continue
+        cv = clip_prediction(float(pred_raw[i]), c)
+        if abs(cv - float(pred_raw[i])) > 0.01:
+            n += 1
+        out[i] = cv
+    return out, n
+
+
 def evaluate_fold(
     df: pd.DataFrame, feat_cols: list[str],
     tr_idx: np.ndarray, te_idx: np.ndarray,
     *, rule_clip: bool, seed: int, rounds: int,
 ) -> dict:
-    """Train on tr_idx, score on te_idx. Returns a metrics dict."""
+    """Train on tr_idx, score on te_idx. Returns a metrics dict.
+
+    Trains four heads on the same feature matrix:
+      - sentence_regressor (squarederror, the existing median model)
+      - p25 / p75 quantile regressors (``reg:quantileerror``)
+      - probation classifier (XGBClassifier on ``_probation``)
+    """
     X = df[feat_cols].astype(float).values
     y = df["sentence_months"].astype(float).values
-    model = _fit(_make_model(seed, rounds), X[tr_idx], y[tr_idx])
+    yp = df["_probation"].astype(int).values
+
+    median_model = _fit(_make_model(seed, rounds), X[tr_idx], y[tr_idx])
+    q25_model = _fit(_make_quantile_model(0.25, seed, rounds), X[tr_idx], y[tr_idx])
+    q75_model = _fit(_make_quantile_model(0.75, seed, rounds), X[tr_idx], y[tr_idx])
 
     y_te = y[te_idx]
-    pred_raw = np.asarray(model.predict(X[te_idx]), dtype=float)
+    X_te = X[te_idx]
+    p50_raw = np.asarray(median_model.predict(X_te), dtype=float)
+    p25_raw = np.asarray(q25_model.predict(X_te), dtype=float)
+    p75_raw = np.asarray(q75_model.predict(X_te), dtype=float)
+
     constraints = _constraints_for(df.iloc[te_idx])
-
     rate_gt, n_gt, n_chk = violation_rate(list(zip(y_te, constraints)))
-    rate_raw, n_rawv, _ = violation_rate(list(zip(pred_raw, constraints)))
+    rate_raw, n_rawv, _ = violation_rate(list(zip(p50_raw, constraints)))
 
-    pred = pred_raw
-    n_clipped = 0
     if rule_clip:
-        pred = pred_raw.copy()
-        for i, c in enumerate(constraints):
-            if c is None:
-                continue
-            np_ = clip_prediction(float(pred_raw[i]), c)
-            if abs(np_ - pred_raw[i]) > 0.01:
-                n_clipped += 1
-            pred[i] = np_
-    rate_clip, n_clipv, _ = violation_rate(list(zip(pred, constraints)))
+        p50, n_clipped = _clip_vector(p50_raw, constraints)
+        p25, _ = _clip_vector(p25_raw, constraints)
+        p75, _ = _clip_vector(p75_raw, constraints)
+        # Re-impose monotonicity after independent clipping (mirror of
+        # models.constrain_sentence's post-clip pass).
+        p50 = np.maximum(p50, p25)
+        p75 = np.maximum(p75, p50)
+    else:
+        p50, p25, p75 = p50_raw, p25_raw, p75_raw
+        n_clipped = 0
+    rate_clip, n_clipv, _ = violation_rate(list(zip(p50, constraints)))
+
+    # Quantile-crossing diagnostics — count rows where raw p25 > p50 > p75.
+    n_cross_raw = int(np.sum((p25_raw > p50_raw + 1e-6)
+                              | (p50_raw > p75_raw + 1e-6)))
+
+    coverage = float(np.mean((y_te >= p25) & (y_te <= p75)))
+
+    # Probation classifier — same feature matrix, separate model. Drop the
+    # leakage-suspect "_probation" column from X by construction (feat_cols
+    # already excludes underscore-prefixed columns).
+    prob_metrics: dict = {"trained": False}
+    yp_tr = yp[tr_idx]
+    if int(yp_tr.sum()) >= 2 and int(yp_tr.sum()) < len(yp_tr):
+        pos_w = max(1.0, (len(yp_tr) - yp_tr.sum()) / max(1, yp_tr.sum()))
+        clf = _fit(_make_classifier(seed, rounds, scale_pos_weight=pos_w),
+                   X[tr_idx], yp_tr)
+        yp_te = yp[te_idx]
+        prob_pred = clf.predict_proba(X_te)[:, 1]
+        yp_hat = (prob_pred >= 0.5).astype(int)
+        prob_metrics = {
+            "trained": True,
+            "model": clf,
+            "y_true": yp_te,
+            "y_prob": prob_pred,
+            "accuracy": float(np.mean(yp_hat == yp_te)),
+            "precision": float(precision_score(yp_te, yp_hat, zero_division=0.0)),
+            "recall": float(recall_score(yp_te, yp_hat, zero_division=0.0)),
+            "pr_auc": float(average_precision_score(yp_te, prob_pred))
+            if yp_te.sum() > 0 else float("nan"),
+            "base_rate": float(yp_te.mean()),
+        }
 
     return {
-        "model": model, "feat_cols": feat_cols,
+        "model": median_model,
+        "q25_model": q25_model, "q75_model": q75_model,
+        "feat_cols": feat_cols,
         "n_train": int(len(tr_idx)), "n_test": int(len(te_idx)),
         "te_idx": np.asarray(te_idx),
-        "y_true": y_te, "y_pred": pred, "y_pred_raw": pred_raw,
-        "mae": mean_absolute_error(y_te, pred),
-        "mae_raw": mean_absolute_error(y_te, pred_raw),
-        "rmse": float(np.sqrt(mean_squared_error(y_te, pred))),
-        "r2": r2_score(y_te, pred) if len(te_idx) > 1 else float("nan"),
-        "hit3": _hit_rate(y_te, pred, 3.0),
-        "hit6": _hit_rate(y_te, pred, 6.0),
+        "y_true": y_te, "y_pred": p50, "y_pred_raw": p50_raw,
+        "p25": p25, "p75": p75, "p25_raw": p25_raw, "p75_raw": p75_raw,
+        "mae": mean_absolute_error(y_te, p50),
+        "mae_raw": mean_absolute_error(y_te, p50_raw),
+        "rmse": float(np.sqrt(mean_squared_error(y_te, p50))),
+        "r2": r2_score(y_te, p50) if len(te_idx) > 1 else float("nan"),
+        "hit3": _hit_rate(y_te, p50, 3.0),
+        "hit6": _hit_rate(y_te, p50, 6.0),
+        "pinball_p25": _pinball(y_te, p25, 0.25),
+        "pinball_p50": _pinball(y_te, p50, 0.50),
+        "pinball_p75": _pinball(y_te, p75, 0.75),
+        "coverage_50": coverage,
+        "n_cross_raw": n_cross_raw,
         "n_clipped": n_clipped, "n_constrained": n_chk,
         "viol_gt": rate_gt, "n_viol_gt": n_gt,
         "viol_raw": rate_raw, "n_viol_raw": n_rawv,
         "viol_clip": rate_clip, "n_viol_clip": n_clipv,
         "median_baseline_mae": mean_absolute_error(
             y_te, np.full_like(y_te, np.median(y[tr_idx]))),
+        "probation": prob_metrics,
     }
 
 
@@ -239,11 +360,20 @@ def _print_fold(tag: str, m: dict, dates: tuple[str, str] | None = None) -> None
           f"RMSE={m['rmse']:6.2f}  R^2={m['r2']:5.3f}  "
           f"±3mo={m['hit3']:5.1%}  ±6mo={m['hit6']:5.1%}  "
           f"(median-base MAE={m['median_baseline_mae']:.2f})")
+    print(f"        quantiles: pinball p25={m['pinball_p25']:.2f}  "
+          f"p50={m['pinball_p50']:.2f}  p75={m['pinball_p75']:.2f}  "
+          f"coverage[p25,p75]={m['coverage_50']:.1%}  "
+          f"raw-crossings={m['n_cross_raw']}/{m['n_test']}")
     print(f"        越界率: gt={m['viol_gt']:.2%}({m['n_viol_gt']}) "
           f"raw={m['viol_raw']:.2%}({m['n_viol_raw']}) "
           f"clipped={m['viol_clip']:.2%}({m['n_viol_clip']}) "
           f"[{m['n_clipped']} clipped / {m['n_constrained']} mapped]"
           f"{'  !! LAYER-4 FAILURE' if m['n_viol_clip'] else ''}")
+    pm = m.get("probation", {})
+    if pm.get("trained"):
+        print(f"        緩刑分類: base={pm['base_rate']:.1%}  "
+              f"acc={pm['accuracy']:.1%}  P={pm['precision']:.1%}  "
+              f"R={pm['recall']:.1%}  PR-AUC={pm['pr_auc']:.3f}")
 
 
 def walk_forward(df: pd.DataFrame, feat_cols: list[str], *,
@@ -280,9 +410,12 @@ def _print_pooled(results: list[dict]) -> None:
     y_true = np.concatenate([r["y_true"] for r in results])
     y_pred = np.concatenate([r["y_pred"] for r in results])
     y_praw = np.concatenate([r["y_pred_raw"] for r in results])
+    p25 = np.concatenate([r["p25"] for r in results])
+    p75 = np.concatenate([r["p75"] for r in results])
     n_viol_gt = sum(r["n_viol_gt"] for r in results)
     n_viol_clip = sum(r["n_viol_clip"] for r in results)
     n_mapped = sum(r["n_constrained"] for r in results)
+    n_cross_raw = sum(r["n_cross_raw"] for r in results)
     print("\n── Pooled across folds ──────────────────────────────────────")
     print(f"  n            = {len(y_true)}  ({len(results)} folds)")
     print(f"  MAE          = {mean_absolute_error(y_true, y_pred):.2f} months "
@@ -291,6 +424,13 @@ def _print_pooled(results: list[dict]) -> None:
     print(f"  R^2          = {r2_score(y_true, y_pred):.3f}")
     print(f"  ±3-month hit = {_hit_rate(y_true, y_pred, 3.0):.1%}")
     print(f"  ±6-month hit = {_hit_rate(y_true, y_pred, 6.0):.1%}")
+    print(f"  pinball p25  = {_pinball(y_true, p25, 0.25):.2f} months")
+    print(f"  pinball p50  = {_pinball(y_true, y_pred, 0.50):.2f} months")
+    print(f"  pinball p75  = {_pinball(y_true, p75, 0.75):.2f} months")
+    cov = float(np.mean((y_true >= p25) & (y_true <= p75)))
+    print(f"  coverage [p25, p75] = {cov:.1%}  (target ~ 50%)")
+    print(f"  raw quantile-crossings = {n_cross_raw}/{len(y_true)}  "
+          f"({n_cross_raw / max(1, len(y_true)):.2%}; post-clip 0 by construction)")
     print(f"  越界率 (ground-truth labels) = {n_viol_gt}/{n_mapped} "
           f"= {n_viol_gt / max(1, n_mapped):.2%}  (data-quality canary)")
     print(f"  越界率 (rule-clipped preds)  = {n_viol_clip}/{n_mapped} "
@@ -299,6 +439,20 @@ def _print_pooled(results: list[dict]) -> None:
     abs_err = np.abs(y_pred - y_true)
     print("  residual |pred-y| percentiles: " + "  ".join(
         f"p{p}={np.percentile(abs_err, p):.1f}" for p in (50, 75, 90, 95, 99)))
+
+    # Probation classifier pooled metrics
+    prob_results = [r for r in results if r.get("probation", {}).get("trained")]
+    if prob_results:
+        py_true = np.concatenate([r["probation"]["y_true"] for r in prob_results])
+        py_prob = np.concatenate([r["probation"]["y_prob"] for r in prob_results])
+        py_hat = (py_prob >= 0.5).astype(int)
+        print(f"\n── Pooled probation classifier ──────────────────────────────")
+        print(f"  n            = {len(py_true)}")
+        print(f"  base rate    = {py_true.mean():.2%}  (positive label rate)")
+        print(f"  accuracy     = {float(np.mean(py_hat == py_true)):.2%}")
+        print(f"  precision    = {precision_score(py_true, py_hat, zero_division=0.0):.2%}")
+        print(f"  recall       = {recall_score(py_true, py_hat, zero_division=0.0):.2%}")
+        print(f"  PR-AUC       = {average_precision_score(py_true, py_prob):.3f}")
 
 
 _BEHAVIOR_PRIORITY = ["運輸", "製造", "販賣", "意圖販賣而持有", "轉讓", "持有", "施用"]
@@ -335,8 +489,9 @@ def _print_by_behavior(df: pd.DataFrame, results: list[dict]) -> None:
         print(f"  {b:<20} {n:>5}  {mae:>6.2f}  {med:>12.2f}")
 
 
-def _print_importance(model: xgb.XGBRegressor, feat_cols: list[str], top: int = 15) -> None:
-    print(f"\nTop {top} features by gain importance (last/full-data model):")
+def _print_importance(model, feat_cols: list[str], top: int = 15,
+                       label: str = "last/full-data model") -> None:
+    print(f"\nTop {top} features by gain importance ({label}):")
     importance = model.get_booster().get_score(importance_type="gain")
     name_map = {f"f{i}": name for i, name in enumerate(feat_cols)}
     for f, score in sorted(importance.items(), key=lambda x: -x[1])[:top]:
@@ -413,34 +568,62 @@ def main() -> int:
         _print_by_behavior(df, results)
 
     if last_model is not None:
-        _print_importance(last_model, feat_cols)
+        _print_importance(last_model, feat_cols, label="median regressor (last fold)")
+    last_clf = (results[-1].get("probation", {}).get("model")
+                if results else None)
+    if last_clf is not None:
+        _print_importance(last_clf, feat_cols, label="probation classifier (last fold)")
 
     if args.save:
         import pickle
-        # Retrain on every (kept) row for the production bundle.
+        # Retrain every head on the full kept dataset for the production bundle.
         X = df[feat_cols].astype(float).values
         y = df["sentence_months"].astype(float).values
-        full = _fit(_make_model(args.seed, args.rounds), X, y)
+        yp = df["_probation"].astype(int).values
+        full_p50 = _fit(_make_model(args.seed, args.rounds), X, y)
+        full_p25 = _fit(_make_quantile_model(0.25, args.seed, args.rounds), X, y)
+        full_p75 = _fit(_make_quantile_model(0.75, args.seed, args.rounds), X, y)
+
+        full_clf = None
+        if int(yp.sum()) >= 2 and int(yp.sum()) < len(yp):
+            pos_w = max(1.0, (len(yp) - yp.sum()) / max(1, yp.sum()))
+            full_clf = _fit(_make_classifier(args.seed, args.rounds,
+                                              scale_pos_weight=pos_w), X, yp)
+
         pooled_mae = (mean_absolute_error(
             np.concatenate([r["y_true"] for r in results]),
             np.concatenate([r["y_pred"] for r in results])) if results else None)
+        pooled_pr_auc = None
+        prob_results = [r for r in results if r.get("probation", {}).get("trained")]
+        if prob_results:
+            py_true = np.concatenate([r["probation"]["y_true"] for r in prob_results])
+            py_prob = np.concatenate([r["probation"]["y_prob"] for r in prob_results])
+            pooled_pr_auc = float(average_precision_score(py_true, py_prob))
+
         bundle = ModelBundle(
-            sentence_regressor=full,
+            sentence_regressor=full_p50,
+            sentence_quantile_p25=full_p25,
+            sentence_quantile_p75=full_p75,
+            probation_classifier=full_clf,
             feature_names=tuple(feat_cols),
             metadata={
                 "trained_on": str(args.inp),
                 "n_rows": int(len(df)),
+                "probation_base_rate": float(yp.mean()),
                 "multi_defendant_dropped": not args.keep_multi_defendant,
                 "rule_clip": rule_clip,
                 "art57": art57_path is not None,
                 "eval": "holdout" if args.holdout else f"walkforward-{args.folds}",
                 "eval_mae": float(pooled_mae) if pooled_mae is not None else None,
+                "eval_probation_pr_auc": pooled_pr_auc,
             },
         )
         args.save.parent.mkdir(parents=True, exist_ok=True)
         with args.save.open("wb") as fh:
             pickle.dump(bundle, fh)
         print(f"\nSaved ModelBundle (retrained on all {len(df)} rows) → {args.save}")
+        print(f"  heads: p50={full_p50 is not None}  p25={full_p25 is not None}  "
+              f"p75={full_p75 is not None}  probation={full_clf is not None}")
 
     return 0
 

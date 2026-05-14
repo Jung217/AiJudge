@@ -62,3 +62,26 @@ def test_extract_features_detects_attempt():
         "甲○○販賣第二級毒品未遂，處有期徒刑貳年。\n犯罪事實\n..."))
     assert f.is_attempt is True
     assert f.sentence_months == 24
+
+
+def test_extract_features_probation_granted_true():
+    f = extract_features(_rec(
+        "臺灣基隆地方法院刑事簡易判決\n主文\n"
+        "甲○○施用第二級毒品，處有期徒刑3月，緩刑貳年。\n犯罪事實\n..."))
+    assert f.probation_granted is True
+    assert f.probation_months == 24
+
+
+def test_extract_features_probation_granted_false():
+    f = extract_features(_rec(
+        "臺灣基隆地方法院刑事簡易判決\n主文\n"
+        "甲○○施用第二級毒品，處有期徒刑3月，如易科罰金，以新臺幣1000元折算1日。\n犯罪事實\n..."))
+    assert f.probation_granted is False
+    assert f.probation_months is None
+
+
+def test_extract_features_probation_arabic_year():
+    f = extract_features(_rec(
+        "臺灣基隆地方法院刑事判決\n主文\n"
+        "乙○○販賣第三級毒品，處有期徒刑1年6月，緩刑3年。\n犯罪事實\n..."))
+    assert f.probation_granted is True
