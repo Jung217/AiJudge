@@ -248,6 +248,7 @@ def _constraints_for(df_rows: pd.DataFrame) -> list:
             behaviors, levels,
             art17_1=bool(row["art17_1"]), art17_2=bool(row["art17_2"]),
             art59=bool(row["art59"]), attempt=bool(row["is_attempt"]),
+            self_surrender=bool(row["self_surrender"]),
             recidivism=bool(row["recidivism"]), summary=bool(row["_summary"]),
         ))
     return out

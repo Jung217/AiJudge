@@ -87,6 +87,7 @@ def apply_reductions(
     art17_2: bool = False,
     art59: bool = False,
     attempt: bool = False,
+    self_surrender: bool = False,
     recidivism: bool = False,
 ) -> SentencingConstraint:
     """Apply statutory reductions and recidivism enhancement.
@@ -94,7 +95,8 @@ def apply_reductions(
     刑法§66: 有期徒刑減輕其刑「至二分之一」— the reduced range has both
     lower and upper bounds scaled by 1/2.
     刑法§70: multiple reductions compound (each ×1/2). Reductions counted:
-    毒品§17Ⅰ, 毒品§17Ⅱ, 刑法§59, and 刑法§25Ⅱ 未遂犯 (得按既遂犯之刑減輕).
+    毒品§17Ⅰ, 毒品§17Ⅱ, 刑法§59, 刑法§25Ⅱ 未遂犯 (得按既遂犯之刑減輕),
+    and 刑法§62 自首 (未發覺前自首者,得減輕其刑).
     刑法§47 + 釋字775: 累犯加重「至二分之一」enhances the *upper* bound only;
     the lower bound stays untouched to allow proportionality (otherwise
     a reduced §17 case combined with 累犯 would have an impossibly high floor).
@@ -102,7 +104,7 @@ def apply_reductions(
     lo, hi = base.min_months, base.max_months
 
     reduction_factor = 1.0
-    for flag in (art17_1, art17_2, art59, attempt):
+    for flag in (art17_1, art17_2, art59, attempt, self_surrender):
         if flag:
             reduction_factor *= 0.5
     lo *= reduction_factor
@@ -112,7 +114,7 @@ def apply_reductions(
         hi = min(hi * 1.5, MAX_FIXED_TERM_MONTHS)
 
     # Once reduced, life/capital options do not auto-apply
-    any_reduction = art17_1 or art17_2 or art59 or attempt
+    any_reduction = art17_1 or art17_2 or art59 or attempt or self_surrender
     return SentencingConstraint(
         min_months=lo,
         max_months=hi,
@@ -197,6 +199,7 @@ def binding_constraint(
     art17_2: bool = False,
     art59: bool = False,
     attempt: bool = False,
+    self_surrender: bool = False,
     recidivism: bool = False,
     summary: bool = False,
     law_version: int = 2020,
@@ -226,7 +229,8 @@ def binding_constraint(
         return None
     c = apply_reductions(
         base, art17_1=art17_1, art17_2=art17_2,
-        art59=art59, attempt=attempt, recidivism=recidivism,
+        art59=art59, attempt=attempt, self_surrender=self_surrender,
+        recidivism=recidivism,
     )
     if summary and c.min_months > 0:
         c = SentencingConstraint(c.min_months * 0.5, c.max_months,

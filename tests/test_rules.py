@@ -45,6 +45,26 @@ def test_attempt_counts_as_a_reduction():
     assert (r2.min_months, r2.max_months) == (30, 90)
 
 
+def test_self_surrender_counts_as_a_reduction():
+    base = SentencingConstraint(120, 360)
+    r = apply_reductions(base, self_surrender=True)         # §62 ×1/2
+    assert (r.min_months, r.max_months) == (60, 180)
+    # §62 + §17Ⅱ compounds per §70
+    r2 = apply_reductions(base, art17_2=True, self_surrender=True)
+    assert (r2.min_months, r2.max_months) == (30, 90)
+    # 自首 also strips life/capital eligibility from the base range
+    base_capital = base_range("販賣", 1, 2020)
+    r3 = apply_reductions(base_capital, self_surrender=True)
+    assert not r3.includes_capital and not r3.includes_life
+
+
+def test_binding_constraint_passes_self_surrender():
+    base = binding_constraint({"持有"}, {1})                 # §11Ⅰ [12, 84]
+    ss = binding_constraint({"持有"}, {1}, self_surrender=True)
+    assert (ss.min_months, ss.max_months) == (base.min_months / 2,
+                                                base.max_months / 2)
+
+
 def test_recidivism_raises_only_upper_bound_and_caps_at_30y():
     base = SentencingConstraint(60, 12 * 30)       # upper already 30Y
     r = apply_reductions(base, recidivism=True)

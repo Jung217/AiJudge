@@ -30,7 +30,7 @@
 - **§57 量刑因子 LLM 抽取**：`scripts/07_llm_extract_factors.py` 已 wire 到 Anthropic Claude API(Haiku 4.5 + prompt cache + 並行 + resume),每件輸出 10 因子 × {mitigating, aggravating, neutral, absent};需設 `ANTHROPIC_API_KEY` 才實跑,全量 5,809 件估約 USD 17–45
 - **多 head 輸出**(plan §5.2):p25 / p50 / p75 三個 quantile head(`reg:quantileerror`)+ 緩刑二元分類 head;`models.predict_with_constraints` 一次回 `{p25, p50, p75, probation_prob}`,post-clip 強制單調
 - **Quantile 校正**(conformal δ-shift):每折拿 val tail 殘差算 `δ_α = quantile(y-ŷ, α)`,test 時 `pred + δ`,把 [p25, p75] 區間覆蓋率從 44.9% → **51.4%**(目標 50%);δ 存進 ModelBundle metadata,推論時自動套用
-- **法定刑度約束**：用主文-only 已定罪行為 lookup + §17/§59/§25Ⅱ/簡易判決 ½ 處理 + 數罪併罰 30 年上限 → 模型預測越界率 3.5% → clip 後 **0%**;ground-truth 標籤殘留越界率 **1.22%**(可解釋為數罪併罰、複雜共犯、§59 未偵測等資料雜訊)
+- **法定刑度約束**:用主文-only 已定罪行為 lookup + §17Ⅰ/§17Ⅱ/§59/§25Ⅱ 未遂/§62 自首 各自 ½ 減刑(§70 compound)+ 簡易判決 floor ½ + 數罪併罰 30 年上限 → 模型預測越界率 3.5% → clip 後 **0%**;ground-truth 標籤殘留越界率 **0.91%**(殘留主要是 §11 持有純質淨重加重型未建表 + §59 隱性減刑沒明引條號)
 - **Walk-forward 時序 CV**:5 折擴展視窗,測試集嚴格晚於訓練;最後一折(2024-01–2026-02 測試) MAE 2.47 月、±6mo 93.6%
 
 ## 模組
