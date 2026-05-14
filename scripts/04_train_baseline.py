@@ -213,6 +213,27 @@ def _fit(model, X_tr, y_tr, val_frac: float = 0.15):
     return model
 
 
+def _calibrate_quantile(model, X_tr: np.ndarray, y_tr: np.ndarray,
+                        alpha: float, val_frac: float = 0.15) -> float:
+    """Conformal marginal shift δ_α: empirical α-quantile of val-tail residuals.
+
+    The quantile head trained with ``reg:quantileerror`` targets the conditional
+    α-quantile but XGBoost regularisation pulls predictions toward the centre,
+    so empirical coverage is consistently narrower than nominal. Shifting raw
+    predictions by ``δ_α = quantile(y_val − ŷ_val, α)`` enforces exactly α
+    coverage on the val tail; on exchangeable test data the shift transfers
+    approximately. Uses the same tail slice as early stopping — small in-sample
+    optimism, but bounded by the val_frac size.
+    """
+    n = len(X_tr)
+    if n < 50:
+        return 0.0
+    cut = max(1, int(n * (1.0 - val_frac)))
+    pred_val = np.asarray(model.predict(X_tr[cut:]), dtype=float)
+    residuals = y_tr[cut:].astype(float) - pred_val
+    return float(np.quantile(residuals, alpha))
+
+
 def _constraints_for(df_rows: pd.DataFrame) -> list:
     out = []
     for _, row in df_rows.iterrows():
@@ -253,7 +274,7 @@ def _clip_vector(pred_raw: np.ndarray, constraints: list) -> tuple[np.ndarray, i
 def evaluate_fold(
     df: pd.DataFrame, feat_cols: list[str],
     tr_idx: np.ndarray, te_idx: np.ndarray,
-    *, rule_clip: bool, seed: int, rounds: int,
+    *, rule_clip: bool, seed: int, rounds: int, calibrate: bool = True,
 ) -> dict:
     """Train on tr_idx, score on te_idx. Returns a metrics dict.
 
@@ -270,11 +291,14 @@ def evaluate_fold(
     q25_model = _fit(_make_quantile_model(0.25, seed, rounds), X[tr_idx], y[tr_idx])
     q75_model = _fit(_make_quantile_model(0.75, seed, rounds), X[tr_idx], y[tr_idx])
 
+    delta25 = _calibrate_quantile(q25_model, X[tr_idx], y[tr_idx], 0.25) if calibrate else 0.0
+    delta75 = _calibrate_quantile(q75_model, X[tr_idx], y[tr_idx], 0.75) if calibrate else 0.0
+
     y_te = y[te_idx]
     X_te = X[te_idx]
     p50_raw = np.asarray(median_model.predict(X_te), dtype=float)
-    p25_raw = np.asarray(q25_model.predict(X_te), dtype=float)
-    p75_raw = np.asarray(q75_model.predict(X_te), dtype=float)
+    p25_raw = np.asarray(q25_model.predict(X_te), dtype=float) + delta25
+    p75_raw = np.asarray(q75_model.predict(X_te), dtype=float) + delta75
 
     constraints = _constraints_for(df.iloc[te_idx])
     rate_gt, n_gt, n_chk = violation_rate(list(zip(y_te, constraints)))
@@ -327,6 +351,7 @@ def evaluate_fold(
     return {
         "model": median_model,
         "q25_model": q25_model, "q75_model": q75_model,
+        "delta25": delta25, "delta75": delta75,
         "feat_cols": feat_cols,
         "n_train": int(len(tr_idx)), "n_test": int(len(te_idx)),
         "te_idx": np.asarray(te_idx),
@@ -363,7 +388,8 @@ def _print_fold(tag: str, m: dict, dates: tuple[str, str] | None = None) -> None
     print(f"        quantiles: pinball p25={m['pinball_p25']:.2f}  "
           f"p50={m['pinball_p50']:.2f}  p75={m['pinball_p75']:.2f}  "
           f"coverage[p25,p75]={m['coverage_50']:.1%}  "
-          f"raw-crossings={m['n_cross_raw']}/{m['n_test']}")
+          f"raw-crossings={m['n_cross_raw']}/{m['n_test']}  "
+          f"δ25={m.get('delta25', 0.0):+.2f}  δ75={m.get('delta75', 0.0):+.2f}")
     print(f"        越界率: gt={m['viol_gt']:.2%}({m['n_viol_gt']}) "
           f"raw={m['viol_raw']:.2%}({m['n_viol_raw']}) "
           f"clipped={m['viol_clip']:.2%}({m['n_viol_clip']}) "
@@ -377,7 +403,8 @@ def _print_fold(tag: str, m: dict, dates: tuple[str, str] | None = None) -> None
 
 
 def walk_forward(df: pd.DataFrame, feat_cols: list[str], *,
-                 folds: int, rule_clip: bool, seed: int, rounds: int) -> list[dict]:
+                 folds: int, rule_clip: bool, seed: int, rounds: int,
+                 calibrate: bool = True) -> list[dict]:
     """Expanding-window temporal CV.
 
     Time-ordered rows are split into ``folds + 1`` contiguous bins. Bin 0 is
@@ -395,7 +422,8 @@ def walk_forward(df: pd.DataFrame, feat_cols: list[str], *,
         if len(te_idx) == 0 or len(tr_idx) < 30:
             continue
         m = evaluate_fold(df, feat_cols, tr_idx, te_idx,
-                          rule_clip=rule_clip, seed=seed, rounds=rounds)
+                          rule_clip=rule_clip, seed=seed, rounds=rounds,
+                          calibrate=calibrate)
         d0 = str(df.iloc[te_idx]["_jdate"].min())
         d1 = str(df.iloc[te_idx]["_jdate"].max())
         _print_fold(f"fold {k + 1}/{folds}", m, (d0, d1))
@@ -514,6 +542,10 @@ def main() -> int:
     ap.add_argument("--no-rule-clip", action="store_true",
                     help="skip layer-4 statutory clipping (ablation only — "
                          "production must keep it on)")
+    ap.add_argument("--no-calibrate", action="store_true",
+                    help="skip conformal δ-shift on p25/p75 (ablation; "
+                         "with this flag, [p25, p75] coverage is the raw "
+                         "quantile-head coverage, typically ~45%%)")
     ap.add_argument("--keep-multi-defendant", action="store_true",
                     help="include judgments whose 主文 names >1 defendant "
                          "(noisy per-defendant labels)")
@@ -548,19 +580,23 @@ def main() -> int:
     print(f"  rule clipping: {'ON' if rule_clip else 'OFF'}")
     print()
 
+    calibrate = not args.no_calibrate
     if args.holdout:
         print("=== Holdout (random 80/20 — sanity check only) ===")
         idx = np.arange(len(df))
         tr, te = train_test_split(idx, test_size=0.2, random_state=args.seed)
         m = evaluate_fold(df, feat_cols, tr, te,
-                          rule_clip=rule_clip, seed=args.seed, rounds=args.rounds)
+                          rule_clip=rule_clip, seed=args.seed, rounds=args.rounds,
+                          calibrate=calibrate)
         _print_fold("holdout", m)
         last_model = m["model"]
         results = [m]
     else:
         print(f"=== Walk-forward temporal CV ({args.folds} folds, expanding window) ===")
+        print(f"  quantile calibration: {'ON (conformal δ-shift)' if calibrate else 'OFF'}")
         results = walk_forward(df, feat_cols, folds=args.folds,
-                               rule_clip=rule_clip, seed=args.seed, rounds=args.rounds)
+                               rule_clip=rule_clip, seed=args.seed, rounds=args.rounds,
+                               calibrate=calibrate)
         _print_pooled(results)
         last_model = results[-1]["model"] if results else None
 
@@ -583,6 +619,8 @@ def main() -> int:
         full_p50 = _fit(_make_model(args.seed, args.rounds), X, y)
         full_p25 = _fit(_make_quantile_model(0.25, args.seed, args.rounds), X, y)
         full_p75 = _fit(_make_quantile_model(0.75, args.seed, args.rounds), X, y)
+        full_d25 = _calibrate_quantile(full_p25, X, y, 0.25) if calibrate else 0.0
+        full_d75 = _calibrate_quantile(full_p75, X, y, 0.75) if calibrate else 0.0
 
         full_clf = None
         if int(yp.sum()) >= 2 and int(yp.sum()) < len(yp):
@@ -616,6 +654,9 @@ def main() -> int:
                 "eval": "holdout" if args.holdout else f"walkforward-{args.folds}",
                 "eval_mae": float(pooled_mae) if pooled_mae is not None else None,
                 "eval_probation_pr_auc": pooled_pr_auc,
+                "delta25": full_d25,
+                "delta75": full_d75,
+                "calibrated": calibrate,
             },
         )
         args.save.parent.mkdir(parents=True, exist_ok=True)

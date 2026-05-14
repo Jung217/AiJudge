@@ -114,10 +114,13 @@ def predict_with_constraints(
     x = np.asarray([[float(features[name]) for name in bundle.feature_names]],
                    dtype=float)
     raw = {"p50": float(bundle.sentence_regressor.predict(x)[0])}
+    meta = bundle.metadata or {}
     if bundle.sentence_quantile_p25 is not None:
-        raw["p25"] = float(bundle.sentence_quantile_p25.predict(x)[0])
+        raw["p25"] = (float(bundle.sentence_quantile_p25.predict(x)[0])
+                       + float(meta.get("delta25", 0.0)))
     if bundle.sentence_quantile_p75 is not None:
-        raw["p75"] = float(bundle.sentence_quantile_p75.predict(x)[0])
+        raw["p75"] = (float(bundle.sentence_quantile_p75.predict(x)[0])
+                       + float(meta.get("delta75", 0.0)))
     result = constrain_sentence(raw, constraint)
     if bundle.probation_classifier is not None:
         result["probation_prob"] = float(

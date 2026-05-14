@@ -15,8 +15,8 @@
 | 行為 / 毒品級數抽取 Jaccard | **0.95 / 0.97** |
 | **XGBoost p50 MAE**（walk-forward 5 折,pooled n=4,509）| **2.20 月** vs. median 基線 3.52 |
 | **R²** / **±3 月命中率** / **±6 月命中率** | **0.589 / 91.0% / 95.3%** |
-| **Quantile pinball loss** (p25 / p50 / p75) | **0.80 / 1.10 / 1.02** |
-| **[p25, p75] 區間覆蓋率** | **44.9%**(目標 ~50%,後續用 isotonic 校正) |
+| **Quantile pinball loss** (p25 / p50 / p75) | **0.79 / 1.10 / 1.01** |
+| **[p25, p75] 區間覆蓋率**(CQR δ-shift 校正後)| **51.4%**(目標 ~50%;校正前 44.9%)|
 | **緩刑分類器** PR-AUC(基底 0.91%)| **0.274** (約 30× 基底;近期 fold PR-AUC 0.33–0.60)|
 | **法定刑度越界率**(rule-clipped)| **0.00%**(raw 預測 3.5% → clip 後 0%)|
 
@@ -29,6 +29,7 @@
 - **純質淨重 regex**：支援阿拉伯（`0.226`）+ 中文小數（`零點貳貳陸` / `拾陸點柒零`）
 - **§57 量刑因子 LLM 抽取**：`scripts/07_llm_extract_factors.py` 已 wire 到 Anthropic Claude API(Haiku 4.5 + prompt cache + 並行 + resume),每件輸出 10 因子 × {mitigating, aggravating, neutral, absent};需設 `ANTHROPIC_API_KEY` 才實跑,全量 5,809 件估約 USD 17–45
 - **多 head 輸出**(plan §5.2):p25 / p50 / p75 三個 quantile head(`reg:quantileerror`)+ 緩刑二元分類 head;`models.predict_with_constraints` 一次回 `{p25, p50, p75, probation_prob}`,post-clip 強制單調
+- **Quantile 校正**(conformal δ-shift):每折拿 val tail 殘差算 `δ_α = quantile(y-ŷ, α)`,test 時 `pred + δ`,把 [p25, p75] 區間覆蓋率從 44.9% → **51.4%**(目標 50%);δ 存進 ModelBundle metadata,推論時自動套用
 - **法定刑度約束**：用主文-only 已定罪行為 lookup + §17/§59/§25Ⅱ/簡易判決 ½ 處理 + 數罪併罰 30 年上限 → 模型預測越界率 3.5% → clip 後 **0%**;ground-truth 標籤殘留越界率 **1.22%**(可解釋為數罪併罰、複雜共犯、§59 未偵測等資料雜訊)
 - **Walk-forward 時序 CV**:5 折擴展視窗,測試集嚴格晚於訓練;最後一折(2024-01–2026-02 測試) MAE 2.47 月、±6mo 93.6%
 
