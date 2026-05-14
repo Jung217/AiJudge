@@ -218,15 +218,29 @@
 
 ### 7.2 服務層
 
-- FastAPI + 免責聲明
-- 版本管理：資料、模型、規則引擎獨立版本
-- Docker 部署
+- [done] FastAPI + 免責聲明:`app.py` 提供 `/health` / `/version` / `/predict`,
+  pydantic `CaseInput` 驗證入力,回傳 `{p25_months, p50_months, p75_months,
+  probation_prob, probation_predicted, constraint, disclaimer}`;每個 response
+  都帶法定免責聲明(不可作為判決依據、不支援法官使用)
+- 版本管理：資料、模型、規則引擎獨立版本(目前在 bundle.metadata 內)
+- Docker 部署:TODO
 
 ### 7.3 治理
 
 - 偏誤定期檢測（disparate impact）
 - 法官特徵**不納入**生產模型
 - 重大修法後**強制重訓**
+
+### 7.4 GitHub Pages 上的 in-browser 互動 demo（規劃中）
+
+GitHub Pages 是靜態托管、沒有後端,所以不能直接跑 FastAPI。要在頁面上做出可填表單即時拿預測的 demo,採 **ONNX in-browser** 路線:
+
+- **模型 export**：`onnxmltools` 把 `ModelBundle` 內 4 個 XGBoost head（p50 / p25 / p75 / 緩刑 classifier）轉成 ONNX,每檔約 0.5–2 MB,放在 `docs/assets/models/`。
+- **JS 端**：載 `onnxruntime-web`（CDN ~5 MB,首次載入有感、後續 cache）。`docs/assets/predict.js` 包:特徵 one-hot 編碼、依序跑四個 session、把 p25 / p75 加上 metadata 內的 `δ_α` 校正、最後套 `rules` 的 clip + monotonize。
+- **Rules port**：`rules.binding_constraint` / `aggregate_only_constraint` / `clip_prediction` 的純函式邏輯約 200 行 Python,要 port 一份等價 JS 版（penalty table 直接 hard-code 為 JSON);用 `tests/test_rules.py` 的 case 在 JS 端跑通才算對齊。
+- **UI**：`docs/index.md` 加 `<form>` + canvas/Chart.js 視覺化區間;附 highly-visible 免責聲明（與 FastAPI 同文）。
+- **取捨**:零後端、零成本、可在 GitHub Pages 上完整運作;代價是首次載入需下載 ~10 MB(onnxruntime + 模型),且 rules engine 必須維護雙語版本(Python 與 JS),增加維護成本——若 FastAPI host 變得穩定便宜,長期應該以 FastAPI 為主、page demo 為輔。
+- 排在 FastAPI / SHAP 之後做。
 
 ## 8. 技術堆疊
 

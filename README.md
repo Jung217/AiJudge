@@ -47,6 +47,7 @@
 | `scripts/06_evaluate_labels.py` | features.py 對 ground-truth 評估 |
 | `scripts/07_llm_extract_factors.py` | §57 量刑因子 Claude API 抽取(prompt cache + resume)|
 | `data/processed/art57_factors.jsonl` | §57 因子（5 sub-agent 平行抽 1,598 件）|
+| `app.py` | FastAPI 服務:`/health` / `/version` / `/predict`,回傳 p25-p50-p75-緩刑機率 + 法定刑度 + 免責聲明 |
 
 ## 安裝
 
@@ -86,6 +87,12 @@ python scripts/04_train_baseline.py --save data/processed/baseline_model.pkl
 # 6. 抽 100 件人工驗證樣本（gt_* 預填 auto_*，只需修改錯的）
 python scripts/05_sample_for_labeling.py --n 100 --prefill
 # 填完 → python scripts/06_evaluate_labels.py
+
+# 7. 起 API 服務(回傳 p25/p50/p75/緩刑機率/法定刑度/免責聲明)
+uvicorn app:app --reload --port 8000
+# 試打:
+curl -X POST http://127.0.0.1:8000/predict -H "Content-Type: application/json" \
+  -d '{"behaviors":["施用"],"drug_levels":[2],"can_convert_to_fine":true,"jcase":"簡"}'
 ```
 
 ## 參考
