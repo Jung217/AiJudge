@@ -326,20 +326,42 @@ def evaluate_fold(
     # Probation classifier — same feature matrix, separate model. Drop the
     # leakage-suspect "_probation" column from X by construction (feat_cols
     # already excludes underscore-prefixed columns).
+    #
+    # scale_pos_weight is sqrt of the imbalance — full inverse-ratio weighting
+    # pushes nearly all predictions above 0.5, sqrt is the usual compromise
+    # that preserves probability ordering while still giving positives signal.
+    # Threshold is then tuned on the val tail by F1-max (default 0.5 is wrong
+    # for any weighted classifier on a 1% positive class).
     prob_metrics: dict = {"trained": False}
     yp_tr = yp[tr_idx]
     if int(yp_tr.sum()) >= 2 and int(yp_tr.sum()) < len(yp_tr):
-        pos_w = max(1.0, (len(yp_tr) - yp_tr.sum()) / max(1, yp_tr.sum()))
+        pos_w = float(np.sqrt(max(1.0, (len(yp_tr) - yp_tr.sum()) / max(1, yp_tr.sum()))))
         clf = _fit(_make_classifier(seed, rounds, scale_pos_weight=pos_w),
                    X[tr_idx], yp_tr)
+        n_tr = len(tr_idx)
+        cut = max(1, int(n_tr * (1.0 - 0.15)))
+        prob_val = clf.predict_proba(X[tr_idx][cut:])[:, 1]
+        y_val = yp_tr[cut:]
+        threshold = 0.5
+        if y_val.sum() >= 2:
+            best_f1, best_t = -1.0, 0.5
+            for t in np.linspace(0.05, 0.95, 19):
+                pred_v = (prob_val >= t).astype(int)
+                p = precision_score(y_val, pred_v, zero_division=0.0)
+                r = recall_score(y_val, pred_v, zero_division=0.0)
+                f1 = 2 * p * r / (p + r) if (p + r) > 0 else 0.0
+                if f1 > best_f1:
+                    best_f1, best_t = f1, float(t)
+            threshold = best_t
         yp_te = yp[te_idx]
         prob_pred = clf.predict_proba(X_te)[:, 1]
-        yp_hat = (prob_pred >= 0.5).astype(int)
+        yp_hat = (prob_pred >= threshold).astype(int)
         prob_metrics = {
             "trained": True,
             "model": clf,
             "y_true": yp_te,
             "y_prob": prob_pred,
+            "threshold": threshold,
             "accuracy": float(np.mean(yp_hat == yp_te)),
             "precision": float(precision_score(yp_te, yp_hat, zero_division=0.0)),
             "recall": float(recall_score(yp_te, yp_hat, zero_division=0.0)),
@@ -399,7 +421,8 @@ def _print_fold(tag: str, m: dict, dates: tuple[str, str] | None = None) -> None
     if pm.get("trained"):
         print(f"        緩刑分類: base={pm['base_rate']:.1%}  "
               f"acc={pm['accuracy']:.1%}  P={pm['precision']:.1%}  "
-              f"R={pm['recall']:.1%}  PR-AUC={pm['pr_auc']:.3f}")
+              f"R={pm['recall']:.1%}  PR-AUC={pm['pr_auc']:.3f}  "
+              f"thr={pm.get('threshold', 0.5):.2f}")
 
 
 def walk_forward(df: pd.DataFrame, feat_cols: list[str], *,
@@ -473,14 +496,21 @@ def _print_pooled(results: list[dict]) -> None:
     if prob_results:
         py_true = np.concatenate([r["probation"]["y_true"] for r in prob_results])
         py_prob = np.concatenate([r["probation"]["y_prob"] for r in prob_results])
-        py_hat = (py_prob >= 0.5).astype(int)
+        # Apply each fold's own tuned threshold to its own rows (pooling raw
+        # probs across folds with a single global threshold is meaningless
+        # when each fold trains a separately weighted model).
+        py_hat = np.concatenate([
+            (r["probation"]["y_prob"] >= r["probation"]["threshold"]).astype(int)
+            for r in prob_results
+        ])
         print(f"\n── Pooled probation classifier ──────────────────────────────")
         print(f"  n            = {len(py_true)}")
         print(f"  base rate    = {py_true.mean():.2%}  (positive label rate)")
         print(f"  accuracy     = {float(np.mean(py_hat == py_true)):.2%}")
-        print(f"  precision    = {precision_score(py_true, py_hat, zero_division=0.0):.2%}")
+        print(f"  precision    = {precision_score(py_true, py_hat, zero_division=0.0):.2%}  (at per-fold F1-max threshold)")
         print(f"  recall       = {recall_score(py_true, py_hat, zero_division=0.0):.2%}")
-        print(f"  PR-AUC       = {average_precision_score(py_true, py_prob):.3f}")
+        print(f"  PR-AUC       = {average_precision_score(py_true, py_prob):.3f}  "
+              f"(lift {average_precision_score(py_true, py_prob) / max(py_true.mean(), 1e-9):.1f}x base)")
 
 
 _BEHAVIOR_PRIORITY = ["運輸", "製造", "販賣", "意圖販賣而持有", "轉讓", "持有", "施用"]
@@ -623,10 +653,25 @@ def main() -> int:
         full_d75 = _calibrate_quantile(full_p75, X, y, 0.75) if calibrate else 0.0
 
         full_clf = None
+        full_threshold = 0.5
         if int(yp.sum()) >= 2 and int(yp.sum()) < len(yp):
-            pos_w = max(1.0, (len(yp) - yp.sum()) / max(1, yp.sum()))
+            pos_w = float(np.sqrt(max(1.0, (len(yp) - yp.sum()) / max(1, yp.sum()))))
             full_clf = _fit(_make_classifier(args.seed, args.rounds,
                                               scale_pos_weight=pos_w), X, yp)
+            n_full = len(X)
+            cut_f = max(1, int(n_full * (1.0 - 0.15)))
+            prob_v = full_clf.predict_proba(X[cut_f:])[:, 1]
+            y_v = yp[cut_f:]
+            if y_v.sum() >= 2:
+                best_f1, best_t = -1.0, 0.5
+                for t in np.linspace(0.05, 0.95, 19):
+                    pv = (prob_v >= t).astype(int)
+                    p = precision_score(y_v, pv, zero_division=0.0)
+                    r = recall_score(y_v, pv, zero_division=0.0)
+                    f1 = 2 * p * r / (p + r) if (p + r) > 0 else 0.0
+                    if f1 > best_f1:
+                        best_f1, best_t = f1, float(t)
+                full_threshold = best_t
 
         pooled_mae = (mean_absolute_error(
             np.concatenate([r["y_true"] for r in results]),
@@ -657,6 +702,7 @@ def main() -> int:
                 "delta25": full_d25,
                 "delta75": full_d75,
                 "calibrated": calibrate,
+                "probation_threshold": full_threshold,
             },
         )
         args.save.parent.mkdir(parents=True, exist_ok=True)

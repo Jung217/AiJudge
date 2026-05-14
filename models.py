@@ -123,8 +123,11 @@ def predict_with_constraints(
                        + float(meta.get("delta75", 0.0)))
     result = constrain_sentence(raw, constraint)
     if bundle.probation_classifier is not None:
-        result["probation_prob"] = float(
-            bundle.probation_classifier.predict_proba(x)[0, 1])
+        prob = float(bundle.probation_classifier.predict_proba(x)[0, 1])
+        result["probation_prob"] = prob
+        threshold = float(meta.get("probation_threshold", 0.5))
+        result["probation_predicted"] = prob >= threshold
+        result["probation_threshold"] = threshold
     if bundle.behavior_classifier is not None:
         result["behavior"] = bundle.behavior_classifier.predict(x)[0]
     return result
