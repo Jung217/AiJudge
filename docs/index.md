@@ -237,86 +237,196 @@ XGBoost 的 quantile head 受正則化影響，原始預測的 `[p25, p75]` 經�
 下面這個工具讓你選擇案件特徵，**即時看到**該類案件依法的法定刑度區間，以及北部 5 院近 8 年同類案件的**實際判決中位數**。所有計算都在瀏覽器內完成，不送任何資料到後端。每個減刑事由旁邊**滑鼠移上去（hover）**可看到對應法條原文。
 
 <style>
-.aj-form { background: #f6f8fa; border: 1px solid #d0d7de; border-radius: 8px;
-           padding: 16px; margin: 16px 0; font-size: 0.95em; }
-.aj-form fieldset { border: 1px solid #d0d7de; border-radius: 6px;
-                    padding: 8px 12px; margin: 8px 0; background: #fff; }
-.aj-form legend { font-weight: 600; padding: 0 6px; color: #0969da; }
-.aj-form label { display: inline-block; margin: 4px 12px 4px 0;
-                 cursor: help; }
-.aj-form label[title] { border-bottom: 1px dotted #57606a; }
-.aj-form select { padding: 4px 8px; border-radius: 4px; border: 1px solid #d0d7de; }
-.aj-output { background: #fff; border: 2px solid #0969da; border-radius: 8px;
-             padding: 16px; margin-top: 12px; }
-.aj-output h4 { margin-top: 0; color: #0969da; }
-.aj-range { font-size: 1.4em; font-weight: 600; color: #24292f; }
-.aj-meta { font-size: 0.85em; color: #57606a; margin-top: 8px; }
-.aj-warn { background: #fff8c5; border-left: 4px solid #d4a72c; padding: 8px 12px;
-           margin-top: 8px; border-radius: 4px; font-size: 0.9em; }
+.aj-card {
+  margin: 24px 0;
+  font-size: 0.95em;
+  color: #24292f;
+}
+.aj-section {
+  margin: 20px 0;
+}
+.aj-section-label {
+  font-size: 0.78em;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #57606a;
+  margin-bottom: 8px;
+}
+.aj-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 10px;
+}
+.aj-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  background: #f6f8fa;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  font-size: 0.9em;
+  user-select: none;
+}
+.aj-chip:hover {
+  background: #ddf4ff;
+  box-shadow: 0 0 0 1px #0969da inset;
+}
+.aj-chip input { margin: 0; cursor: pointer; }
+.aj-chip input:checked ~ span { color: #0969da; font-weight: 600; }
+.aj-chip:has(input:checked) {
+  background: #ddf4ff;
+  box-shadow: 0 0 0 1px #0969da inset;
+}
+.aj-chip-row { display: flex; flex-wrap: wrap; gap: 8px; }
+.aj-select {
+  padding: 8px 12px;
+  border-radius: 8px;
+  border: none;
+  background: #f6f8fa;
+  font-size: 0.95em;
+  font-family: inherit;
+  cursor: pointer;
+  min-width: 160px;
+}
+.aj-select:hover { background: #ddf4ff; }
+.aj-select:focus { outline: 2px solid #0969da; background: #fff; }
+.aj-input {
+  padding: 8px 12px;
+  border-radius: 8px;
+  border: none;
+  background: #f6f8fa;
+  font-size: 0.95em;
+  font-family: inherit;
+  width: 8em;
+}
+.aj-input:focus { outline: 2px solid #0969da; background: #fff; }
+.aj-output {
+  margin-top: 28px;
+  padding: 24px;
+  background: linear-gradient(135deg, #ddf4ff 0%, #f6f8fa 100%);
+  border-radius: 12px;
+}
+.aj-output-label {
+  font-size: 0.78em;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #57606a;
+  margin-bottom: 6px;
+}
+.aj-range {
+  font-size: 1.6em;
+  font-weight: 600;
+  color: #0969da;
+  letter-spacing: -0.01em;
+}
+.aj-sub {
+  font-size: 1em;
+  color: #24292f;
+  margin-top: 4px;
+}
+.aj-row + .aj-row { margin-top: 18px; }
+.aj-meta { font-size: 0.85em; color: #57606a; margin-top: 6px; }
+.aj-bucket {
+  margin-top: 18px;
+  padding-top: 16px;
+  border-top: 1px dashed #d0d7de;
+}
+.aj-quantiles {
+  display: flex;
+  gap: 24px;
+  margin-top: 8px;
+  flex-wrap: wrap;
+}
+.aj-q { display: flex; flex-direction: column; }
+.aj-q-label { font-size: 0.75em; color: #57606a; }
+.aj-q-val { font-size: 1.2em; font-weight: 600; color: #24292f; }
+.aj-warn {
+  font-size: 0.85em;
+  color: #57606a;
+  margin-top: 16px;
+  line-height: 1.5;
+}
+.aj-warn b { color: #cf222e; }
+.aj-tag {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 2px 8px;
+  background: #ffebe9;
+  color: #cf222e;
+  border-radius: 4px;
+  font-size: 0.75em;
+  font-weight: 600;
+}
+[data-hint] { cursor: help; }
 </style>
 
-<div class="aj-form" id="aj-form">
+<div class="aj-card" id="aj-form">
 
-<fieldset>
-<legend>案件基本面</legend>
-<label title="案件起訴的地方法院（北部 5 院）">法院：
-  <select id="aj-court">
-    <option value="KL">基隆地方法院</option>
-    <option value="TP">臺北地方法院</option>
-    <option value="SL">士林地方法院</option>
-    <option value="PC" selected>新北地方法院</option>
-    <option value="TY">桃園地方法院</option>
-  </select>
-</label>
-<label title="毒品危害防制條例 §2 將毒品分為一至四級。第一級最重(海洛因、嗎啡等)、第四級最輕。">毒品級別：
-  <select id="aj-level">
-    <option value="1">第一級（海洛因、嗎啡⋯）</option>
-    <option value="2" selected>第二級（安非他命、大麻⋯）</option>
-    <option value="3">第三級（FM2、K他命⋯）</option>
-    <option value="4">第四級</option>
-  </select>
-</label>
-</fieldset>
+<div class="aj-section">
+  <div class="aj-section-label">案件背景</div>
+  <div class="aj-chip-row">
+    <select class="aj-select" id="aj-court" data-hint title="案件起訴的地方法院(北部 5 院)">
+      <option value="KL">基隆地方法院</option>
+      <option value="TP">臺北地方法院</option>
+      <option value="SL">士林地方法院</option>
+      <option value="PC" selected>新北地方法院</option>
+      <option value="TY">桃園地方法院</option>
+    </select>
+    <select class="aj-select" id="aj-level" data-hint title="毒品危害防制條例 §2 將毒品分為一至四級。第一級最重(海洛因、嗎啡等)、第四級最輕。">
+      <option value="1">第一級毒品</option>
+      <option value="2" selected>第二級毒品</option>
+      <option value="3">第三級毒品</option>
+      <option value="4">第四級毒品</option>
+    </select>
+    <input class="aj-input" id="aj-weight" type="number" min="0" step="0.1"
+           placeholder="純質淨重 g (選填)"
+           data-hint title="持有第一級純質淨重 ≥10 公克 → §11Ⅴ 加重;持有第二級 ≥20 公克 → §11Ⅵ 加重。"
+           style="width: 12em">
+  </div>
+</div>
 
-<fieldset>
-<legend>行為態樣（主刑來源）</legend>
-<label title="毒品危害防制條例 §10：施用第一級毒品 6 月-5 年；施用第二級 3 年以下。"><input type="radio" name="aj-beh" value="施用" checked> 施用</label>
-<label title="§11Ⅰ-Ⅳ：持有 1-3 年以下；§11Ⅴ/Ⅵ 純質淨重達 10g(第一級)/20g(第二級)→ 加重至 1-7 年 / 6 月-5 年。"><input type="radio" name="aj-beh" value="持有"> 持有</label>
-<label title="毒品危害防制條例 §8：轉讓第一級 1-7 年、第二級 6 月-5 年、第三級 3 年以下、第四級 1 年以下。"><input type="radio" name="aj-beh" value="轉讓"> 轉讓</label>
-<label title="毒品危害防制條例 §4Ⅰ-Ⅳ：販賣第一級 死刑/無期/15+ 年、第二級 無期/10+ 年、第三級 7+ 年、第四級 5-12 年。"><input type="radio" name="aj-beh" value="販賣"> 販賣</label>
-<label title="毒品危害防制條例 §5：意圖販賣而持有 比照販賣降一檔。"><input type="radio" name="aj-beh" value="意圖販賣而持有"> 意圖販賣而持有</label>
-<label title="毒品危害防制條例 §4Ⅰ-Ⅳ：運輸罪刑度與販賣相同。"><input type="radio" name="aj-beh" value="運輸"> 運輸</label>
-<label title="毒品危害防制條例 §4Ⅰ-Ⅳ：製造罪刑度與販賣相同。"><input type="radio" name="aj-beh" value="製造"> 製造</label>
-</fieldset>
+<div class="aj-section">
+  <div class="aj-section-label">行為態樣</div>
+  <div class="aj-chip-row">
+    <label class="aj-chip" data-hint title="毒品危害防制條例 §10:施用第一級 6 月-5 年、施用第二級 3 年以下。"><input type="radio" name="aj-beh" value="施用" checked><span>施用</span></label>
+    <label class="aj-chip" data-hint title="§11Ⅰ-Ⅳ:持有 1-3 年以下;§11Ⅴ/Ⅵ 純質淨重達 10g(第一級)/20g(第二級)→ 加重 1-7 年 / 6 月-5 年。"><input type="radio" name="aj-beh" value="持有"><span>持有</span></label>
+    <label class="aj-chip" data-hint title="毒品危害防制條例 §8:轉讓第一級 1-7 年、第二級 6 月-5 年、第三級 3 年以下、第四級 1 年以下。"><input type="radio" name="aj-beh" value="轉讓"><span>轉讓</span></label>
+    <label class="aj-chip" data-hint title="毒品危害防制條例 §4Ⅰ-Ⅳ:販賣第一級 死刑/無期/15+ 年、第二級 無期/10+ 年、第三級 7+ 年、第四級 5-12 年。"><input type="radio" name="aj-beh" value="販賣"><span>販賣</span></label>
+    <label class="aj-chip" data-hint title="毒品危害防制條例 §5:意圖販賣而持有,比照販賣降一檔。"><input type="radio" name="aj-beh" value="意圖販賣而持有"><span>意圖販賣而持有</span></label>
+    <label class="aj-chip" data-hint title="毒品危害防制條例 §4Ⅰ-Ⅳ:運輸罪刑度與販賣相同。"><input type="radio" name="aj-beh" value="運輸"><span>運輸</span></label>
+    <label class="aj-chip" data-hint title="毒品危害防制條例 §4Ⅰ-Ⅳ:製造罪刑度與販賣相同。"><input type="radio" name="aj-beh" value="製造"><span>製造</span></label>
+  </div>
+</div>
 
-<fieldset>
-<legend>減刑／加重事由（hover 看法條）</legend>
-<label title="毒品危害防制條例 §17 第 1 項：犯第 4 條至第 8 條之罪，供出毒品來源因而查獲其他正犯或共犯者，減輕或免除其刑。"><input type="checkbox" id="aj-17_1"> §17Ⅰ 供出來源因而查獲</label>
-<label title="毒品危害防制條例 §17 第 2 項：犯第 4 條至第 8 條之罪，於偵查及審判中均自白者，減輕其刑。"><input type="checkbox" id="aj-17_2"> §17Ⅱ 偵審均自白</label>
-<label title="刑法 §59：犯罪之情狀顯可憫恕，認科以最低度刑仍嫌過重者，得酌量減輕其刑。"><input type="checkbox" id="aj-59"> §59 酌減</label>
-<label title="刑法 §62：對於未發覺之罪自首而受裁判者，得減輕其刑。"><input type="checkbox" id="aj-62"> §62 自首</label>
-<label title="刑法 §25 第 2 項：未遂犯之處罰，得按既遂犯之刑減輕之。"><input type="checkbox" id="aj-attempt"> §25Ⅱ 未遂</label>
-<label title="刑法 §47：受徒刑之執行完畢，或一部之執行而赦免後，五年以內故意再犯有期徒刑以上之罪者，為累犯，加重本刑至二分之一。"><input type="checkbox" id="aj-recid"> §47 累犯（加重）</label>
-<label title="簡易判決最高僅得宣告 6 月以下得易科罰金之刑(刑事訴訟法 §449)，若超過則隱含有減刑事由，本模型對下限自動 ½。"><input type="checkbox" id="aj-summary"> 簡易判決</label>
-</fieldset>
+<div class="aj-section">
+  <div class="aj-section-label">減刑事由(滑鼠移上去看法條)</div>
+  <div class="aj-chip-row">
+    <label class="aj-chip" data-hint title="毒品危害防制條例 §17 第 1 項:犯第 4 條至第 8 條之罪,供出毒品來源因而查獲其他正犯或共犯者,減輕或免除其刑。"><input type="checkbox" id="aj-17_1"><span>§17Ⅰ 供出來源</span></label>
+    <label class="aj-chip" data-hint title="毒品危害防制條例 §17 第 2 項:犯第 4 條至第 8 條之罪,於偵查及審判中均自白者,減輕其刑。"><input type="checkbox" id="aj-17_2"><span>§17Ⅱ 偵審均自白</span></label>
+    <label class="aj-chip" data-hint title="刑法 §59:犯罪之情狀顯可憫恕,認科以最低度刑仍嫌過重者,得酌量減輕其刑。"><input type="checkbox" id="aj-59"><span>§59 酌減</span></label>
+    <label class="aj-chip" data-hint title="刑法 §62:對於未發覺之罪自首而受裁判者,得減輕其刑。"><input type="checkbox" id="aj-62"><span>§62 自首</span></label>
+    <label class="aj-chip" data-hint title="刑法 §25 第 2 項:未遂犯之處罰,得按既遂犯之刑減輕之。"><input type="checkbox" id="aj-attempt"><span>§25Ⅱ 未遂</span></label>
+  </div>
+</div>
 
-<fieldset>
-<legend>純質淨重（影響 §11 持有加重型）</legend>
-<label title="持有第一級純質淨重 ≥10 公克 → §11Ⅴ 加重；持有第二級純質淨重 ≥20 公克 → §11Ⅵ 加重。其他罪名此欄目前僅供參考。">純質淨重 (g)：
-  <input type="number" id="aj-weight" min="0" step="0.1" placeholder="未認定請留空" style="width: 8em">
-</label>
-</fieldset>
+<div class="aj-section">
+  <div class="aj-section-label">加重 / 程序</div>
+  <div class="aj-chip-row">
+    <label class="aj-chip" data-hint title="刑法 §47:受徒刑之執行完畢、或一部之執行而赦免後,五年以內故意再犯有期徒刑以上之罪者,為累犯,加重本刑至二分之一。"><input type="checkbox" id="aj-recid"><span>§47 累犯(加重)</span></label>
+    <label class="aj-chip" data-hint title="簡易判決最高僅得宣告 6 月以下得易科罰金之刑(刑事訴訟法 §449),若超過則隱含有減刑事由,本模型對下限自動 ½。"><input type="checkbox" id="aj-summary"><span>簡易判決</span></label>
+  </div>
+</div>
 
 <div class="aj-output" id="aj-output">
-  <h4>預測結果（即時更新）</h4>
-  <div id="aj-result">調整左側欄位…</div>
+  <div id="aj-result">調整上方選項…</div>
 </div>
 
 <div class="aj-warn">
-本工具<b>僅供教育與一般參考</b>。法定刑度區間 100% 依現行法律計算；
-「同類案件中位數」來自 2018-01 ~ 2026-02 北部 5 院 4.9 萬件實際判決,
-但個案差異(共犯、和解、犯後態度、§57 主觀因子)無法在此呈現。
-<b>不可</b>作為法律建議、判決依據、或律師代理之替代。
+本工具<b>僅供教育與一般參考</b>。法定刑度區間 100% 依現行法律計算;「同類案件中位數」來自 2018-01 ~ 2026-02 北部 5 院 4.9 萬件實際判決,但個案差異(共犯、和解、犯後態度、§57 主觀因子)無法在此呈現。<b>不可</b>作為法律建議、判決依據、或律師代理之替代。
 </div>
 
 </div>
@@ -326,7 +436,7 @@ XGBoost 的 quantile head 受正則化影響，原始預測的 `[p25, p75]` 經�
 研究方法、資料處理流程、評估指標皆公開於 GitHub 倉庫，可供同儕審查。
 </p>
 
-<small>Last updated: 2026-05-16</small>
+<small>Last updated: 2026-05-17</small>
 
 <script>
 const baseColor = '#0969da';
@@ -626,30 +736,42 @@ function render() {
     return;
   }
   const reduced = applyReductions(base, s.flags);
-  const enhTag = (s.behavior === "持有" && s.weight_g != null &&
-                  HOLD_ENH[String(s.level)] &&
-                  s.weight_g >= HOLD_ENH[String(s.level)].threshold_g)
-                  ? ` <span style="color:#cc4128">(§11Ⅴ/Ⅵ 加重型)</span>` : "";
+  const enhanced = (s.behavior === "持有" && s.weight_g != null &&
+                    HOLD_ENH[String(s.level)] &&
+                    s.weight_g >= HOLD_ENH[String(s.level)].threshold_g);
+  const enhTag = enhanced
+                  ? `<span class="aj-tag">§11Ⅴ/Ⅵ 加重</span>` : "";
   let lifeNote = "";
-  if (reduced.capital) lifeNote += " 含死刑";
-  else if (reduced.life) lifeNote += " 含無期徒刑";
+  if (reduced.capital) lifeNote = ` <span class="aj-tag">含死刑</span>`;
+  else if (reduced.life) lifeNote = ` <span class="aj-tag">含無期徒刑</span>`;
 
   let bucketHtml = "";
   const b = lookupBucket(s);
   if (b) {
-    bucketHtml = `<div style="margin-top:12px"><b>近年同類判決</b>(n=${b.n},${b.scope}):<br>
-      p25/p50/p75 = <b>${fmtMonths(b.p25)} / ${fmtMonths(b.p50)} / ${fmtMonths(b.p75)}</b></div>`;
+    bucketHtml = `
+      <div class="aj-bucket">
+        <div class="aj-output-label">近年同類案件實際判決 · n=${b.n} · ${b.scope}</div>
+        <div class="aj-quantiles">
+          <div class="aj-q"><span class="aj-q-label">較輕 25%</span><span class="aj-q-val">${fmtMonths(b.p25)}</span></div>
+          <div class="aj-q"><span class="aj-q-label">中位數</span><span class="aj-q-val">${fmtMonths(b.p50)}</span></div>
+          <div class="aj-q"><span class="aj-q-label">較重 25%</span><span class="aj-q-val">${fmtMonths(b.p75)}</span></div>
+        </div>
+      </div>`;
   } else {
-    bucketHtml = `<div style="margin-top:12px; color:#57606a"><i>該組合資料量不足(< 3 件),
-      未提供統計中位數</i></div>`;
+    bucketHtml = `
+      <div class="aj-bucket">
+        <div class="aj-meta">該組合在資料集中 &lt; 3 件,未提供統計中位數</div>
+      </div>`;
   }
-  const flagsText = Object.entries(s.flags).filter(([_, v]) => v).map(([k, _]) => k).join(", ") || "無";
   out.innerHTML = `
-    <div><b>法定刑度區間</b>${enhTag}:<span class="aj-range">
-      ${fmtMonths(base.lo)} – ${fmtMonths(base.hi)}</span></div>
-    <div style="margin-top:6px"><b>套用減刑後合法範圍</b>:<span class="aj-range">
-      ${fmtMonths(reduced.lo)} – ${fmtMonths(reduced.hi)}</span>${lifeNote}</div>
-    <div class="aj-meta">已勾選:${flagsText}</div>
+    <div class="aj-row">
+      <div class="aj-output-label">法定刑度區間 ${enhTag}</div>
+      <div class="aj-range">${fmtMonths(base.lo)} – ${fmtMonths(base.hi)}</div>
+    </div>
+    <div class="aj-row">
+      <div class="aj-output-label">套用減刑/加重後合法範圍${lifeNote}</div>
+      <div class="aj-range">${fmtMonths(reduced.lo)} – ${fmtMonths(reduced.hi)}</div>
+    </div>
     ${bucketHtml}
   `;
 }
