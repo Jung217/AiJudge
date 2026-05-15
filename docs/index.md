@@ -361,7 +361,32 @@ XGBoost 的 quantile head 受正則化影響，原始預測的 `[p25, p75]` 經�
   font-size: 0.75em;
   font-weight: 600;
 }
-[data-hint] { cursor: help; }
+[data-hint] { cursor: help; position: relative; }
+.aj-tooltip {
+  position: fixed;
+  z-index: 9999;
+  max-width: 340px;
+  padding: 10px 14px;
+  background: #1f2328;
+  color: #f6f8fa;
+  border-radius: 8px;
+  font-size: 0.85em;
+  line-height: 1.5;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.25);
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+.aj-tooltip.visible { opacity: 1; }
+.aj-tooltip::after {
+  content: "";
+  position: absolute;
+  top: -6px;
+  left: 24px;
+  border: 6px solid transparent;
+  border-top: 0;
+  border-bottom-color: #1f2328;
+}
 </style>
 
 <div class="aj-card" id="aj-form">
@@ -369,14 +394,14 @@ XGBoost 的 quantile head 受正則化影響，原始預測的 `[p25, p75]` 經�
 <div class="aj-section">
   <div class="aj-section-label">案件背景</div>
   <div class="aj-chip-row">
-    <select class="aj-select" id="aj-court" data-hint title="案件起訴的地方法院(北部 5 院)">
+    <select class="aj-select" id="aj-court" data-hint data-tip="案件起訴的地方法院(北部 5 院)">
       <option value="KL">基隆地方法院</option>
       <option value="TP">臺北地方法院</option>
       <option value="SL">士林地方法院</option>
       <option value="PC" selected>新北地方法院</option>
       <option value="TY">桃園地方法院</option>
     </select>
-    <select class="aj-select" id="aj-level" data-hint title="毒品危害防制條例 §2 將毒品分為一至四級。第一級最重(海洛因、嗎啡等)、第四級最輕。">
+    <select class="aj-select" id="aj-level" data-hint data-tip="毒品危害防制條例 §2 將毒品分為一至四級。第一級最重(海洛因、嗎啡等)、第四級最輕。">
       <option value="1">第一級毒品</option>
       <option value="2" selected>第二級毒品</option>
       <option value="3">第三級毒品</option>
@@ -384,7 +409,7 @@ XGBoost 的 quantile head 受正則化影響，原始預測的 `[p25, p75]` 經�
     </select>
     <input class="aj-input" id="aj-weight" type="number" min="0" step="0.1"
            placeholder="純質淨重 g (選填)"
-           data-hint title="持有第一級純質淨重 ≥10 公克 → §11Ⅴ 加重;持有第二級 ≥20 公克 → §11Ⅵ 加重。"
+           data-hint data-tip="持有第一級純質淨重 ≥10 公克 → §11Ⅴ 加重;持有第二級 ≥20 公克 → §11Ⅵ 加重。"
            style="width: 12em">
   </div>
 </div>
@@ -392,32 +417,32 @@ XGBoost 的 quantile head 受正則化影響，原始預測的 `[p25, p75]` 經�
 <div class="aj-section">
   <div class="aj-section-label">行為態樣</div>
   <div class="aj-chip-row">
-    <label class="aj-chip" data-hint title="毒品危害防制條例 §10:施用第一級 6 月-5 年、施用第二級 3 年以下。"><input type="radio" name="aj-beh" value="施用" checked><span>施用</span></label>
-    <label class="aj-chip" data-hint title="§11Ⅰ-Ⅳ:持有 1-3 年以下;§11Ⅴ/Ⅵ 純質淨重達 10g(第一級)/20g(第二級)→ 加重 1-7 年 / 6 月-5 年。"><input type="radio" name="aj-beh" value="持有"><span>持有</span></label>
-    <label class="aj-chip" data-hint title="毒品危害防制條例 §8:轉讓第一級 1-7 年、第二級 6 月-5 年、第三級 3 年以下、第四級 1 年以下。"><input type="radio" name="aj-beh" value="轉讓"><span>轉讓</span></label>
-    <label class="aj-chip" data-hint title="毒品危害防制條例 §4Ⅰ-Ⅳ:販賣第一級 死刑/無期/15+ 年、第二級 無期/10+ 年、第三級 7+ 年、第四級 5-12 年。"><input type="radio" name="aj-beh" value="販賣"><span>販賣</span></label>
-    <label class="aj-chip" data-hint title="毒品危害防制條例 §5:意圖販賣而持有,比照販賣降一檔。"><input type="radio" name="aj-beh" value="意圖販賣而持有"><span>意圖販賣而持有</span></label>
-    <label class="aj-chip" data-hint title="毒品危害防制條例 §4Ⅰ-Ⅳ:運輸罪刑度與販賣相同。"><input type="radio" name="aj-beh" value="運輸"><span>運輸</span></label>
-    <label class="aj-chip" data-hint title="毒品危害防制條例 §4Ⅰ-Ⅳ:製造罪刑度與販賣相同。"><input type="radio" name="aj-beh" value="製造"><span>製造</span></label>
+    <label class="aj-chip" data-hint data-tip="毒品危害防制條例 §10:施用第一級 6 月-5 年、施用第二級 3 年以下。"><input type="radio" name="aj-beh" value="施用" checked><span>施用</span></label>
+    <label class="aj-chip" data-hint data-tip="§11Ⅰ-Ⅳ:持有 1-3 年以下;§11Ⅴ/Ⅵ 純質淨重達 10g(第一級)/20g(第二級)→ 加重 1-7 年 / 6 月-5 年。"><input type="radio" name="aj-beh" value="持有"><span>持有</span></label>
+    <label class="aj-chip" data-hint data-tip="毒品危害防制條例 §8:轉讓第一級 1-7 年、第二級 6 月-5 年、第三級 3 年以下、第四級 1 年以下。"><input type="radio" name="aj-beh" value="轉讓"><span>轉讓</span></label>
+    <label class="aj-chip" data-hint data-tip="毒品危害防制條例 §4Ⅰ-Ⅳ:販賣第一級 死刑/無期/15+ 年、第二級 無期/10+ 年、第三級 7+ 年、第四級 5-12 年。"><input type="radio" name="aj-beh" value="販賣"><span>販賣</span></label>
+    <label class="aj-chip" data-hint data-tip="毒品危害防制條例 §5:意圖販賣而持有,比照販賣降一檔。"><input type="radio" name="aj-beh" value="意圖販賣而持有"><span>意圖販賣而持有</span></label>
+    <label class="aj-chip" data-hint data-tip="毒品危害防制條例 §4Ⅰ-Ⅳ:運輸罪刑度與販賣相同。"><input type="radio" name="aj-beh" value="運輸"><span>運輸</span></label>
+    <label class="aj-chip" data-hint data-tip="毒品危害防制條例 §4Ⅰ-Ⅳ:製造罪刑度與販賣相同。"><input type="radio" name="aj-beh" value="製造"><span>製造</span></label>
   </div>
 </div>
 
 <div class="aj-section">
   <div class="aj-section-label">減刑事由(滑鼠移上去看法條)</div>
   <div class="aj-chip-row">
-    <label class="aj-chip" data-hint title="毒品危害防制條例 §17 第 1 項:犯第 4 條至第 8 條之罪,供出毒品來源因而查獲其他正犯或共犯者,減輕或免除其刑。"><input type="checkbox" id="aj-17_1"><span>§17Ⅰ 供出來源</span></label>
-    <label class="aj-chip" data-hint title="毒品危害防制條例 §17 第 2 項:犯第 4 條至第 8 條之罪,於偵查及審判中均自白者,減輕其刑。"><input type="checkbox" id="aj-17_2"><span>§17Ⅱ 偵審均自白</span></label>
-    <label class="aj-chip" data-hint title="刑法 §59:犯罪之情狀顯可憫恕,認科以最低度刑仍嫌過重者,得酌量減輕其刑。"><input type="checkbox" id="aj-59"><span>§59 酌減</span></label>
-    <label class="aj-chip" data-hint title="刑法 §62:對於未發覺之罪自首而受裁判者,得減輕其刑。"><input type="checkbox" id="aj-62"><span>§62 自首</span></label>
-    <label class="aj-chip" data-hint title="刑法 §25 第 2 項:未遂犯之處罰,得按既遂犯之刑減輕之。"><input type="checkbox" id="aj-attempt"><span>§25Ⅱ 未遂</span></label>
+    <label class="aj-chip" data-hint data-tip="毒品危害防制條例 §17 第 1 項:犯第 4 條至第 8 條之罪,供出毒品來源因而查獲其他正犯或共犯者,減輕或免除其刑。"><input type="checkbox" id="aj-17_1"><span>§17Ⅰ 供出來源</span></label>
+    <label class="aj-chip" data-hint data-tip="毒品危害防制條例 §17 第 2 項:犯第 4 條至第 8 條之罪,於偵查及審判中均自白者,減輕其刑。"><input type="checkbox" id="aj-17_2"><span>§17Ⅱ 偵審均自白</span></label>
+    <label class="aj-chip" data-hint data-tip="刑法 §59:犯罪之情狀顯可憫恕,認科以最低度刑仍嫌過重者,得酌量減輕其刑。"><input type="checkbox" id="aj-59"><span>§59 酌減</span></label>
+    <label class="aj-chip" data-hint data-tip="刑法 §62:對於未發覺之罪自首而受裁判者,得減輕其刑。"><input type="checkbox" id="aj-62"><span>§62 自首</span></label>
+    <label class="aj-chip" data-hint data-tip="刑法 §25 第 2 項:未遂犯之處罰,得按既遂犯之刑減輕之。"><input type="checkbox" id="aj-attempt"><span>§25Ⅱ 未遂</span></label>
   </div>
 </div>
 
 <div class="aj-section">
   <div class="aj-section-label">加重 / 程序</div>
   <div class="aj-chip-row">
-    <label class="aj-chip" data-hint title="刑法 §47:受徒刑之執行完畢、或一部之執行而赦免後,五年以內故意再犯有期徒刑以上之罪者,為累犯,加重本刑至二分之一。"><input type="checkbox" id="aj-recid"><span>§47 累犯(加重)</span></label>
-    <label class="aj-chip" data-hint title="簡易判決最高僅得宣告 6 月以下得易科罰金之刑(刑事訴訟法 §449),若超過則隱含有減刑事由,本模型對下限自動 ½。"><input type="checkbox" id="aj-summary"><span>簡易判決</span></label>
+    <label class="aj-chip" data-hint data-tip="刑法 §47:受徒刑之執行完畢、或一部之執行而赦免後,五年以內故意再犯有期徒刑以上之罪者,為累犯,加重本刑至二分之一。"><input type="checkbox" id="aj-recid"><span>§47 累犯(加重)</span></label>
+    <label class="aj-chip" data-hint data-tip="簡易判決最高僅得宣告 6 月以下得易科罰金之刑(刑事訴訟法 §449),若超過則隱含有減刑事由,本模型對下限自動 ½。"><input type="checkbox" id="aj-summary"><span>簡易判決</span></label>
   </div>
 </div>
 
@@ -776,6 +801,44 @@ function render() {
   `;
 }
 
+function initTooltips() {
+  // Shared single tooltip node, repositioned on hover. Native title= has a
+  // ~1s delay and ignores nested labels/spans inconsistently — this custom
+  // version fires immediately and works on any element with [data-tip].
+  const tip = document.createElement("div");
+  tip.className = "aj-tooltip";
+  document.body.appendChild(tip);
+
+  function show(ev) {
+    const t = ev.currentTarget;
+    const text = t.getAttribute("data-tip");
+    if (!text) return;
+    tip.textContent = text;
+    tip.classList.add("visible");
+    const rect = t.getBoundingClientRect();
+    const tipRect = tip.getBoundingClientRect();
+    // Place below the element, clamped to viewport edges.
+    let left = rect.left;
+    if (left + tipRect.width > window.innerWidth - 12) {
+      left = window.innerWidth - tipRect.width - 12;
+    }
+    if (left < 12) left = 12;
+    let top = rect.bottom + 8;
+    if (top + tipRect.height > window.innerHeight - 12) {
+      top = rect.top - tipRect.height - 8;
+    }
+    tip.style.left = left + "px";
+    tip.style.top = top + "px";
+  }
+  function hide() { tip.classList.remove("visible"); }
+  document.querySelectorAll("[data-tip]").forEach(el => {
+    el.addEventListener("mouseenter", show);
+    el.addEventListener("mouseleave", hide);
+    el.addEventListener("focus", show);
+    el.addEventListener("blur", hide);
+  });
+}
+
 async function initCalculator() {
   try {
     const r = await fetch("./assets/sentence_buckets.json", {cache: "force-cache"});
@@ -788,6 +851,7 @@ async function initCalculator() {
   }
   document.getElementById("aj-form").addEventListener("change", render);
   document.getElementById("aj-form").addEventListener("input", render);
+  initTooltips();
   render();
 }
 
