@@ -1,23 +1,34 @@
-"""Filter records for 臺灣基隆地方法院 drug-related first-instance guilty judgments."""
+"""Filter records for 北部地方法院 drug-related first-instance guilty judgments.
+
+By default keeps only 基隆地院; pass ``courts=NORTHERN_5_COURT_CODES`` to
+``filter_drug_cases`` for the 5-court pretraining set (plan §5.1).
+"""
 from __future__ import annotations
 
 import re
-from typing import Iterable, Iterator
+from typing import Iterable, Iterator, Sequence
 
 from records import Record
 
-# "臺" is the official Taiwan-正體 form; "台" is a common variant occasionally
-# found in older or auto-OCR'd records.
-KEELUNG_COURT_NAMES = (
-    "臺灣基隆地方法院",
-    "台灣基隆地方法院",
-)
+# JID prefix → (court display name, list of header aliases).
+# "臺" is the official 正體 form; "台" is a common variant in older / OCR'd data.
+# The 2-letter JID prefix is the primary filter — jfull substring checks were
+# leaking cases that merely *referenced* another court (e.g. a Yunlin case
+# citing a prior Keelung ruling).
+COURT_REGISTRY: dict[str, tuple[str, tuple[str, ...]]] = {
+    "KL": ("基隆", ("臺灣基隆地方法院", "台灣基隆地方法院")),
+    "TP": ("臺北", ("臺灣臺北地方法院", "台灣台北地方法院", "臺灣台北地方法院")),
+    "SL": ("士林", ("臺灣士林地方法院", "台灣士林地方法院")),
+    "PC": ("新北", ("臺灣新北地方法院", "台灣新北地方法院",
+                     "臺灣板橋地方法院", "台灣板橋地方法院")),
+    "TY": ("桃園", ("臺灣桃園地方法院", "台灣桃園地方法院")),
+}
 
-# JID prefix = court + division code. All 基隆地方法院 entries start with "KL".
-# e.g. KLDM (刑事庭), KLDS, KLEM, KLHM, KLDV, KLEV, etc.
-# This is the primary filter — jfull substring check was leaking cases that
-# merely *referenced* 基隆 (e.g. a Yunlin case citing a prior Keelung ruling).
-KEELUNG_JID_PREFIXES = ("KL",)
+NORTHERN_5_COURT_CODES = ("KL", "TP", "SL", "PC", "TY")
+KEELUNG_ONLY = ("KL",)
+# Backward-compat aliases.
+KEELUNG_COURT_NAMES = COURT_REGISTRY["KL"][1]
+KEELUNG_JID_PREFIXES = KEELUNG_ONLY
 
 DRUG_KEYWORDS = (
     "毒品危害防制條例",
@@ -66,13 +77,27 @@ def _extract_main_text(jfull: str) -> str:
     return jfull[idx : idx + 2000]
 
 
+def court_code_for(record: Record,
+                    courts: Sequence[str] = KEELUNG_ONLY) -> str | None:
+    """Two-letter court code if ``record`` belongs to one of ``courts`` and the
+    court name shows up in the JFULL header. Returns None otherwise.
+
+    The header check is defensive: the JID prefix alone has been seen to leak
+    a few cases that reference another court (e.g. citation of a prior ruling).
+    """
+    if not record.jid:
+        return None
+    for code in courts:
+        if record.jid.startswith(code):
+            names = COURT_REGISTRY[code][1]
+            if any(name in record.jfull[:150] for name in names):
+                return code
+            return None
+    return None
+
+
 def is_keelung(record: Record) -> bool:
-    if record.jid and not any(record.jid.startswith(p) for p in KEELUNG_JID_PREFIXES):
-        return False
-    # Defensive secondary check — court name must appear very early (header),
-    # not just anywhere in the body.
-    head = record.jfull[:150]
-    return any(name in head for name in KEELUNG_COURT_NAMES)
+    return court_code_for(record, KEELUNG_ONLY) is not None
 
 
 def is_drug_case(record: Record) -> bool:
@@ -98,10 +123,18 @@ def is_first_instance_guilty(record: Record) -> bool:
     return any(m in main for m in GUILTY_MARKERS)
 
 
-def keelung_drug_cases(records: Iterable[Record]) -> Iterator[Record]:
-    """Yield only records matching all filter predicates."""
+def filter_drug_cases(
+    records: Iterable[Record],
+    courts: Sequence[str] = KEELUNG_ONLY,
+) -> Iterator[tuple[Record, str]]:
+    """Yield ``(record, court_code)`` pairs for one of ``courts``.
+
+    The court code is the 2-letter JID prefix (e.g. ``"KL"``); callers that
+    want the display name can look it up in :data:`COURT_REGISTRY`.
+    """
     for r in records:
-        if not is_keelung(r):
+        code = court_code_for(r, courts)
+        if code is None:
             continue
         if not is_drug_case(r):
             continue
@@ -109,4 +142,10 @@ def keelung_drug_cases(records: Iterable[Record]) -> Iterator[Record]:
             continue
         if not is_first_instance_guilty(r):
             continue
+        yield r, code
+
+
+def keelung_drug_cases(records: Iterable[Record]) -> Iterator[Record]:
+    """Backward-compat: drop the court code, only 基隆 cases."""
+    for r, _ in filter_drug_cases(records, KEELUNG_ONLY):
         yield r

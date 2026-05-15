@@ -138,10 +138,10 @@
 
 基隆單院年案量約 300–500 件，5 年扣除排除項後可用樣本約 800–1,200 件，單院直訓練風險高。採：
 
-**方案 A（推薦）：全國預訓練 + 基隆微調**
-1. 以北部 5 地院（基、北、士、新北、桃）同期資料建立基礎模型
-2. 加入「法院」作為特徵
-3. 基隆樣本加權或 fine-tune
+**方案 A(已執行):北部 5 院聯合訓練,以 `court_*` flag 區分風格**
+1. [done] 以北部 5 地院(基/北/士/新北/桃)同期資料建立基礎模型 — 2018-01 ~ 2026-02、98 個月、68,985 件(基隆 5,809、新北 24,947、桃園 20,750、臺北 11,324、士林 6,155)。`filter.NORTHERN_5_COURT_CODES`、`scripts/02_filter.py --courts northern`。
+2. [done] 加入「法院」作為 one-hot 特徵(`court_KL/TP/SL/PC/TY`),讓 model 自行區分各院量刑風格。
+3. [done — 不需單獨 fine-tune] 5 院聯訓 model 在基隆 test 列上 MAE = 2.06 月,**比基隆 only 訓練的 2.20 月還好 ~6%**。其他院:新北 2.52 / 士林 2.65 / 臺北 2.74 / 桃園 3.53 月。pooled MAE 2.85 是被桃園/新北寬刑度分布拉高,並非每院個別變差。
 
 ### 5.2 分層模型
 
@@ -338,7 +338,9 @@ AiJudge/
    - [done] 數罪併罰處理：`features.n_sentence_counts` / `is_aggregate_sentence`；多罪/應執行刑的列改用 `rules.aggregate_only_constraint()`（只強制 §51 三十年上限，因為單罪刑度區間無法約束合併刑）。
    - [done] `features.is_attempt`（主文「未遂」）→ `rules` 視為 §25Ⅱ 得減輕（與 §59 同，上下限各 ×½）；`binding_constraint(summary=True)` 對簡易判決把下限 ×½（§59 常只記於「聲請簡易判決處刑書」附件，JFULL 看不到）。`n_sentence_counts` / `is_aggregate_sentence` / `is_attempt` 同時當成模型特徵。
    - [done] **分層 bundle（plan §5.2）**：除既有 `sentence_regressor`（中位數）外，新增 (a) p25 / p75 分位數頭（XGBoost 2.x `reg:quantileerror`，與中位數模型共用超參數），(b) `probation_classifier`（XGBClassifier on `features.probation_granted`，新增為布林欄位＋3 個 unit test）。`ModelBundle` 四個欄位皆於 `--save` 時填入；`models.predict_with_constraints` 一次回傳 `{p25_months, p50_months, p75_months, probation_prob}` 並由 `constrain_sentence` 完成裁剪後的單調性。
-   - 現況（**2018-01 ~ 2026-02、98 個月、5,809 件 → 5,410 列（單被告）**、5 fold pooled n=4,509）：rule-clipped 越界率 = **0.00%**；ground-truth 越界率 **1.22%**；MAE **2.20 月**（raw 2.34）、±3 月命中 **91.0%**、±6 月 **95.3%**、R² 0.589。
+   - **現況(2018-01 ~ 2026-02、98 個月、北部 5 院 68,985 件 → 62,328 列(單被告)、5 fold pooled n=51,940)**:rule-clipped 越界率 = **0.00%**;ground-truth 越界率 **2.10%**;MAE **2.85 月**(raw 3.00)、±3 月命中 **86.0%**、±6 月 **92.4%**、R² **0.672**。
+   - **Per-court MAE pooled**:基隆 **2.06**(n=4,484)、新北 2.52(n=18,246)、士林 2.65(n=4,590)、臺北 2.74(n=7,847)、桃園 3.53(n=16,773)月。**5 院聯訓 model 在基隆 test 列上 MAE 2.06 比基隆-only model 的 2.20 還好 ~6%** — 其他 4 院案件當增強樣本、`court_*` flag 區分風格,KL 規律學得更穩。整體 MAE 升高是被桃園/新北寬刑度分布拉高,並非每院個別變差。
+   - 備援:基隆-only model 仍可訓出(`python scripts/04_train_baseline.py --in data/filtered/keelung_drug_all.jsonl --save data/processed/baseline_model.pkl`、基隆 5,410 列、MAE 2.20)作為單院純粹基線。生產主推 5 院 model(`baseline_north5_model.pkl`)。
    - 分位數頭：pooled pinball p25 = **0.80** / p50 = **1.10** / p75 = **1.02**；coverage [p25, p75] = **44.9%**（理論 50%，略保守）；raw 越階率 (p25>p50 or p50>p75) **15.5%**，clipped 後 0%（`constrain_sentence` 後一步單調化保證）。
    - 緩刑分類器：base rate = **0.91%**（毒品案緩刑罕見）；pooled accuracy **58.1%**、precision **1.5%**、recall **70.7%**、PR-AUC **0.274**（顯著高於 base rate，但精度仍受極度類別不平衡所限）。
    - 最後一折（2024-01 ~ 2026-02 測試，train 4,508）：MAE 2.48 月、R² 0.657、±6 月 93.2%——對近期判決泛化穩定，無明顯時序漂移。

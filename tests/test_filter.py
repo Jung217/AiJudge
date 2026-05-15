@@ -1,4 +1,7 @@
 from filter import (
+    NORTHERN_5_COURT_CODES,
+    court_code_for,
+    filter_drug_cases,
     is_drug_case,
     is_first_instance_guilty,
     is_keelung,
@@ -96,3 +99,36 @@ def test_pipeline_end_to_end():
     out = list(keelung_drug_cases([keelung_guilty, taipei_guilty, keelung_fraud]))
     assert len(out) == 1
     assert out[0].jid.startswith("KLDM")
+
+
+def test_court_code_for_returns_2letter_prefix():
+    keelung = _rec(jid="KLDM,112,訴,1,20230101,1",
+                    jfull="臺灣基隆地方法院刑事判決\n主文\n...")
+    taipei = _rec(jid="TPDM,112,訴,2,20230101,1",
+                   jfull="臺灣臺北地方法院刑事判決\n主文\n...")
+    new_taipei = _rec(jid="PCDM,112,訴,3,20230101,1",
+                       jfull="臺灣新北地方法院刑事判決\n主文\n...")
+    legacy_panqiao = _rec(jid="PCDM,101,訴,4,20120101,1",
+                           jfull="臺灣板橋地方法院刑事判決\n主文\n...")
+    yunlin = _rec(jid="ULDM,112,訴,5,20230101,1",
+                   jfull="臺灣雲林地方法院刑事判決\n主文\n...")
+
+    assert court_code_for(keelung, NORTHERN_5_COURT_CODES) == "KL"
+    assert court_code_for(taipei, NORTHERN_5_COURT_CODES) == "TP"
+    assert court_code_for(new_taipei, NORTHERN_5_COURT_CODES) == "PC"
+    # 新北 was renamed from 板橋 in 2012, JID prefix retained — header name
+    # still works since 板橋 is in the alias list.
+    assert court_code_for(legacy_panqiao, NORTHERN_5_COURT_CODES) == "PC"
+    # Non-northern court should not be picked up.
+    assert court_code_for(yunlin, NORTHERN_5_COURT_CODES) is None
+
+
+def test_filter_drug_cases_emits_court_code_for_each_record():
+    cases = [
+        _rec(jid="KLDM,112,訴,1,20230101,1", jtitle="毒品",
+             jfull="臺灣基隆地方法院刑事判決\n主文\n甲○○販賣第二級毒品，處有期徒刑柒年陸月。\n犯罪事實\n"),
+        _rec(jid="TYDM,112,訴,2,20230101,1", jtitle="毒品",
+             jfull="臺灣桃園地方法院刑事判決\n主文\n乙○○販賣第二級毒品，處有期徒刑柒年陸月。\n犯罪事實\n"),
+    ]
+    out = list(filter_drug_cases(cases, NORTHERN_5_COURT_CODES))
+    assert {c for _, c in out} == {"KL", "TY"}

@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-BUNDLE = Path("data/processed/baseline_model.pkl")
+BUNDLE = Path("data/processed/baseline_north5_model.pkl")
 pytestmark = pytest.mark.skipif(
     not BUNDLE.exists(),
     reason="model bundle not trained yet — run scripts/04_train_baseline.py --save",

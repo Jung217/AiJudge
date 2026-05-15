@@ -1,8 +1,8 @@
 # AiJudge
 
-> **臺灣基隆地方法院毒品案件量刑預測模型**
+> **臺灣北部 5 地方法院(基/北/士/新北/桃)毒品案件量刑預測模型**
 > 
-> 2018-01 ~ 2026-02、98 個月、5,809 件判決 · features.py 結構化抽取 + XGBoost + 法定刑度約束 + walk-forward 時序 CV
+> 2018-01 ~ 2026-02、98 個月、**68,985 件判決**(其中基隆 5,809、新北 24,947、桃園 20,750、臺北 11,324、士林 6,155)· features.py 結構化抽取 + XGBoost + 法定刑度約束 + walk-forward 時序 CV + 多 head(p25/p50/p75 quantile + 緩刑分類器 + SHAP)
 
 > 成果展示 → [jung217.github.io/AiJudge](https://jung217.github.io/AiJudge/)
 
@@ -13,14 +13,17 @@
 | 量刑（月）抽取準確率（n=94 標註樣本）| **100% exact match, MAE 0.0** |
 | §17/§59 偵測 F1（n=100）| **0.93–1.00** |
 | 行為 / 毒品級數抽取 Jaccard | **0.95 / 0.97** |
-| **XGBoost p50 MAE**（walk-forward 5 折,pooled n=4,509）| **2.20 月** vs. median 基線 3.52 |
-| **R²** / **±3 月命中率** / **±6 月命中率** | **0.589 / 91.0% / 95.3%** |
-| **Quantile pinball loss** (p25 / p50 / p75) | **0.79 / 1.10 / 1.01** |
-| **[p25, p75] 區間覆蓋率**(CQR δ-shift 校正後)| **51.4%**(目標 ~50%;校正前 44.9%)|
-| **緩刑分類器**(基底 0.91%,sqrt(pos_w)+F1-max threshold)| **PR-AUC 0.305(33× 基底)**,P 37.5% / R 36.6% / acc 98.87% |
-| **法定刑度越界率**(rule-clipped)| **0.00%**(raw 預測 3.5% → clip 後 0%)|
+| **XGBoost p50 MAE**(walk-forward 5 折,pooled n=51,940,5 院混合)| **2.85 月** vs. median 基線 6.00 |
+| **基隆 test 列 MAE**(n=4,484,同一個 5 院 model 評估)| **2.06 月**(比基隆-only model 的 2.20 還好 ~6%)|
+| **R²** / **±3 月命中率** / **±6 月命中率** | **0.672 / 86.0% / 92.4%** |
+| **Quantile pinball loss** (p25 / p50 / p75) | **1.03 / 1.43 / 1.31** |
+| **[p25, p75] 區間覆蓋率**(CQR δ-shift 校正後)| **49.7%**(目標 ~50%)|
+| **緩刑分類器**(基底 2.87%,sqrt(pos_w)+F1-max threshold)| **PR-AUC 0.367(13× 基底)**,P 34.5% / R 71.7% / acc 95.27% |
+| **法定刑度越界率**(rule-clipped)| **0.00%**(raw 預測 3.4% → clip 後 0%)|
 
-施用 MAE **1.00 月**、持有 **1.08 月**、轉讓 **4.50 月**;販賣 **7.09 月**、運輸 **28 月**、製造 **22 月**(重罪樣本仍稀,變異大)。
+**Per-court MAE**:基隆 **2.06**、新北 2.52、士林 2.65、臺北 2.74、桃園 3.53 月 — 桃園變異最大、基隆最穩。
+
+**Per-primary-behavior MAE**(5 院 pooled):施用 **1.25 月**(n=25k)、持有 **1.17**(n=19k)、轉讓 **2.80**;販賣 **10.29**(n=5.9k,↑ from 571)、運輸 **28.76**、製造 **17.76**、意圖販賣而持有 **12.17**。重罪樣本擴大 10–100×,但平均 MAE 被桃園/新北高變異案件牽動;若只看基隆案件,重罪 MAE 應仍與基隆-only model 相當或更低。
 
 ## 亮點
 
@@ -72,17 +75,20 @@ pip install -r requirements.txt
 WORKERS=6 python scripts/01b_extract_rars.py
 #    RAR_DIR / OUT_DIR / EXTRACT_LOG 可用 env var 覆寫(例如解到 D:\)
 
-# 3. 過濾基隆毒品案件
-python scripts/02_filter.py --zip-dir data/extracted \
-    --out data/filtered/keelung_drug_all.jsonl
+# 3. 過濾北部 5 院毒品案件(基/北/士/新北/桃)
+python scripts/02_filter.py --zip-dir data/extracted --courts northern \
+    --out data/filtered/north5_drug_all.jsonl
+#    若只想要基隆,把 --courts northern 拿掉(預設 keelung)
 
 # 4. 統計探索
-python scripts/03_explore.py --in data/filtered/keelung_drug_all.jsonl
+python scripts/03_explore.py --in data/filtered/north5_drug_all.jsonl
 
-# 5. 訓練 baseline(預設 walk-forward 時序 CV,法定刑度 clip 預設開)
+# 5. 訓練 baseline(預設 walk-forward 時序 CV,法定刑度 clip 預設開,
+#    預設讀 north5_drug_all.jsonl)
 python scripts/04_train_baseline.py
-python scripts/04_train_baseline.py --no-rule-clip   # layer-4 ablation
-python scripts/04_train_baseline.py --save data/processed/baseline_model.pkl
+python scripts/04_train_baseline.py --no-rule-clip       # layer-4 ablation
+python scripts/04_train_baseline.py --in data/filtered/keelung_drug_all.jsonl  # 只看基隆
+python scripts/04_train_baseline.py --save data/processed/baseline_north5_model.pkl
 
 # 6. 抽 100 件人工驗證樣本（gt_* 預填 auto_*，只需修改錯的）
 python scripts/05_sample_for_labeling.py --n 100 --prefill
@@ -110,6 +116,6 @@ curl -X POST "http://127.0.0.1:8000/explain?top=8" -H "Content-Type: application
 ## 限制與聲明
 
 - **僅供學術研究用途**。本模型不可作為法律建議或審判依據。
-- 訓練資料限於基隆地方法院，不適用於其他法院或不同罪名。
+- 訓練資料限於北部 5 地方法院(基/北/士/新北/桃)毒品案件,不適用於其他法院或不同罪名。模型用 `court_*` flag 區分各院量刑風格,基隆案件預測 MAE 2.06 月、其他院 2.5-3.5 月。
 - 純質淨重欄位 22.7% 覆蓋率，重大案件仍需專家輔助判斷。
 - 多被告案件採首被告視角；複雜共犯結構未完整建模。

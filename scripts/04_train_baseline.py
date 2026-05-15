@@ -54,6 +54,9 @@ from rules import (  # noqa: E402
 
 BEHAVIORS = ["施用", "持有", "販賣", "運輸", "製造", "轉讓", "意圖販賣而持有"]
 DRUG_LEVELS = [1, 2, 3, 4]
+# Northern 5-court codes — see filter.COURT_REGISTRY. "??" is the fallback for
+# jsonls produced before the multi-court filter (no "court" field).
+COURTS = ["KL", "TP", "SL", "PC", "TY"]
 ART57_FACTORS = ["motive", "provocation", "means", "life_status", "character",
                  "intellect", "relation_victim", "duty_breach", "harm", "post_attitude"]
 
@@ -87,9 +90,11 @@ def build_dataframe(jsonl_path: Path, art57_path: Path | None) -> pd.DataFrame:
             if not f.sentence_months:
                 continue  # skip 拘役-only and label-less cases
             wt = f.max_drug_weight_g
+            court = d.get("court") or (rec.jid[:2] if rec.jid else "")
             row = {
                 "jid": rec.jid,
                 "jyear": int(rec.jyear) if rec.jyear.isdigit() else 0,
+                "_court": court,
                 "art17_1": int(f.art17_1_applied),
                 "art17_2": int(f.art17_2_applied),
                 "art59": int(f.art59_applied),
@@ -126,6 +131,8 @@ def build_dataframe(jsonl_path: Path, art57_path: Path | None) -> pd.DataFrame:
                 row[f"b_{b}"] = int(b in f.behaviors)
             for lv in DRUG_LEVELS:
                 row[f"lv_{lv}"] = int(lv in f.drug_levels)
+            for c in COURTS:
+                row[f"court_{c}"] = int(court == c)
             rows.append(row)
     return pd.DataFrame(rows)
 
@@ -524,6 +531,33 @@ def _primary_behavior(row) -> str:
     return "(其他)"
 
 
+def _print_by_court(df: pd.DataFrame, results: list[dict]) -> None:
+    """Per-court MAE across pooled walk-forward test rows.
+
+    Lets us see whether a 5-court model is still as accurate on its
+    home-court rows (KL) as a KL-only model would be, vs. how it does on
+    the other 4 courts it now has to span.
+    """
+    if not results or "_court" not in df.columns:
+        return
+    buckets: dict[str, list[tuple[float, float]]] = {}
+    for r in results:
+        te = df.iloc[r["te_idx"]]
+        for (_, row), yt, yp in zip(te.iterrows(), r["y_true"], r["y_pred"]):
+            buckets.setdefault(str(row["_court"]), []).append((float(yt), float(yp)))
+    if len(buckets) <= 1:
+        return
+    print("\nPer-court MAE (pooled across folds):")
+    print(f"  {'court':<8} {'n':>6}  {'MAE':>6}  {'median |err|':>12}")
+    for k in sorted(buckets, key=lambda c: -len(buckets[c])):
+        pairs = buckets[k]
+        yt = np.array([p[0] for p in pairs])
+        yp = np.array([p[1] for p in pairs])
+        mae = mean_absolute_error(yt, yp)
+        med = float(np.median(np.abs(yp - yt)))
+        print(f"  {k:<8} {len(pairs):>6}  {mae:>6.2f}  {med:>12.2f}")
+
+
 def _print_by_behavior(df: pd.DataFrame, results: list[dict]) -> None:
     """Per-primary-behavior MAE across pooled walk-forward test rows."""
     if not results:
@@ -564,7 +598,7 @@ def _print_importance(model, feat_cols: list[str], top: int = 15,
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--in", dest="inp", type=Path,
-                    default=Path("data/filtered/keelung_drug_all.jsonl"))
+                    default=Path("data/filtered/north5_drug_all.jsonl"))
     ap.add_argument("--art57", type=str,
                     default="data/processed/art57_factors.jsonl",
                     help="JSONL of §57 directions (set to '' to disable)")
@@ -632,6 +666,7 @@ def main() -> int:
         last_model = results[-1]["model"] if results else None
 
     if not args.holdout:
+        _print_by_court(df, results)
         _print_by_behavior(df, results)
 
     if last_model is not None:

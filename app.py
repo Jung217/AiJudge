@@ -29,7 +29,7 @@ from rules import aggregate_only_constraint, binding_constraint
 
 
 BUNDLE_PATH = Path(os.environ.get("AIJUDGE_BUNDLE",
-                                    "data/processed/baseline_model.pkl"))
+                                    "data/processed/baseline_north5_model.pkl"))
 
 DISCLAIMER = (
     "本模型僅為臺灣基隆地方法院毒品案件「量刑趨勢」的統計推估,「不可」"
