@@ -402,10 +402,10 @@ XGBoost 的 quantile head 受正則化影響，原始預測的 `[p25, p75]` 經�
       <option value="TY">桃園地方法院</option>
     </select>
     <select class="aj-select" id="aj-level" data-hint data-tip="毒品危害防制條例 §2 將毒品分為一至四級。第一級最重(海洛因、嗎啡等)、第四級最輕。">
-      <option value="1">第一級毒品</option>
-      <option value="2" selected>第二級毒品</option>
-      <option value="3">第三級毒品</option>
-      <option value="4">第四級毒品</option>
+      <option value="1">第一級毒品(海洛因、嗎啡)</option>
+      <option value="2" selected>第二級毒品(安非他命、大麻)</option>
+      <option value="3">第三級毒品(FM2、K他命)</option>
+      <option value="4">第四級毒品(管制原料)</option>
     </select>
     <input class="aj-input" id="aj-weight" type="number" min="0" step="0.1"
            placeholder="純質淨重 g (選填)"
@@ -694,12 +694,28 @@ function applyReductions(base, flags) {
 
 function fmtMonths(m) {
   if (m == null || isNaN(m)) return "—";
-  if (m < 1) return `${(m * 30).toFixed(0)} 日`;
+  if (m <= 0) return "0";
+  if (m < 1) {
+    // 0 < m < 1 月,通常是 §59 半減後 ½ 月之類的怪數字,以日表示
+    return `${(m * 30).toFixed(0)} 日`;
+  }
   const yrs = Math.floor(m / 12);
   const rem = m - yrs * 12;
-  if (yrs === 0) return `${m.toFixed(1)} 月`;
+  if (yrs === 0) return `${m.toFixed(1)} 月`.replace(".0", "");
   if (rem < 0.5) return `${yrs} 年`;
   return `${yrs} 年 ${rem.toFixed(0)} 月`;
+}
+
+function fmtRange(lo, hi) {
+  // 下限 0 → 法律寫法是「X 以下」,不應顯示「0 – X」(誤導且 0 日無意義)
+  // 法律上「X 以下」隱含可宣告拘役 / 罰金 / 緩刑,沒有最低刑期
+  if (lo <= 0 && hi > 0) {
+    return `<span class="aj-range">${fmtMonths(hi)}</span><span class="aj-meta" style="margin-left:8px">以下(得拘役 / 罰金)</span>`;
+  }
+  if (lo > 0 && hi > 0) {
+    return `<span class="aj-range">${fmtMonths(lo)} 以上 · ${fmtMonths(hi)} 以下</span>`;
+  }
+  return `<span class="aj-range">—</span>`;
 }
 
 let BUCKETS = null;
@@ -774,30 +790,33 @@ function render() {
   const b = lookupBucket(s);
   if (b) {
     bucketHtml = `
-      <div class="aj-bucket">
-        <div class="aj-output-label">近年同類案件實際判決 · n=${b.n} · ${b.scope}</div>
+      <div class="aj-row">
+        <div class="aj-output-label">預測刑期 — 北部 5 院近年同類判決 · n=${b.n} · ${b.scope}</div>
         <div class="aj-quantiles">
           <div class="aj-q"><span class="aj-q-label">較輕 25%</span><span class="aj-q-val">${fmtMonths(b.p25)}</span></div>
-          <div class="aj-q"><span class="aj-q-label">中位數</span><span class="aj-q-val">${fmtMonths(b.p50)}</span></div>
+          <div class="aj-q"><span class="aj-q-label">中位數</span><span class="aj-q-val" style="color:#0969da;font-size:1.6em">${fmtMonths(b.p50)}</span></div>
           <div class="aj-q"><span class="aj-q-label">較重 25%</span><span class="aj-q-val">${fmtMonths(b.p75)}</span></div>
         </div>
       </div>`;
   } else {
     bucketHtml = `
-      <div class="aj-bucket">
-        <div class="aj-meta">該組合在資料集中 &lt; 3 件,未提供統計中位數</div>
+      <div class="aj-row">
+        <div class="aj-output-label">預測刑期</div>
+        <div class="aj-meta">該特徵組合在資料集中 &lt; 3 件,樣本過稀,僅顯示法律邊界。</div>
       </div>`;
   }
   out.innerHTML = `
-    <div class="aj-row">
-      <div class="aj-output-label">法定刑度區間 ${enhTag}</div>
-      <div class="aj-range">${fmtMonths(base.lo)} – ${fmtMonths(base.hi)}</div>
-    </div>
-    <div class="aj-row">
-      <div class="aj-output-label">套用減刑/加重後合法範圍${lifeNote}</div>
-      <div class="aj-range">${fmtMonths(reduced.lo)} – ${fmtMonths(reduced.hi)}</div>
-    </div>
     ${bucketHtml}
+    <div class="aj-bucket">
+      <div class="aj-row">
+        <div class="aj-output-label">法定刑度上下限 ${enhTag}</div>
+        ${fmtRange(base.lo, base.hi)}
+      </div>
+      <div class="aj-row">
+        <div class="aj-output-label">套用減刑/加重後合法範圍${lifeNote}</div>
+        ${fmtRange(reduced.lo, reduced.hi)}
+      </div>
+    </div>
   `;
 }
 
