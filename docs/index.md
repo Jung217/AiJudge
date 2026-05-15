@@ -415,15 +415,15 @@ XGBoost 的 quantile head 受正則化影響，原始預測的 `[p25, p75]` 經�
 </div>
 
 <div class="aj-section">
-  <div class="aj-section-label">行為態樣</div>
+  <div class="aj-section-label">行為態樣(可多選,法定刑度取最重罪)</div>
   <div class="aj-chip-row">
-    <label class="aj-chip" data-hint data-tip="毒品危害防制條例 §10:施用第一級 6 月-5 年、施用第二級 3 年以下。"><input type="radio" name="aj-beh" value="施用" checked><span>施用</span></label>
-    <label class="aj-chip" data-hint data-tip="§11Ⅰ-Ⅳ:持有 1-3 年以下;§11Ⅴ/Ⅵ 純質淨重達 10g(第一級)/20g(第二級)→ 加重 1-7 年 / 6 月-5 年。"><input type="radio" name="aj-beh" value="持有"><span>持有</span></label>
-    <label class="aj-chip" data-hint data-tip="毒品危害防制條例 §8:轉讓第一級 1-7 年、第二級 6 月-5 年、第三級 3 年以下、第四級 1 年以下。"><input type="radio" name="aj-beh" value="轉讓"><span>轉讓</span></label>
-    <label class="aj-chip" data-hint data-tip="毒品危害防制條例 §4Ⅰ-Ⅳ:販賣第一級 死刑/無期/15+ 年、第二級 無期/10+ 年、第三級 7+ 年、第四級 5-12 年。"><input type="radio" name="aj-beh" value="販賣"><span>販賣</span></label>
-    <label class="aj-chip" data-hint data-tip="毒品危害防制條例 §5:意圖販賣而持有,比照販賣降一檔。"><input type="radio" name="aj-beh" value="意圖販賣而持有"><span>意圖販賣而持有</span></label>
-    <label class="aj-chip" data-hint data-tip="毒品危害防制條例 §4Ⅰ-Ⅳ:運輸罪刑度與販賣相同。"><input type="radio" name="aj-beh" value="運輸"><span>運輸</span></label>
-    <label class="aj-chip" data-hint data-tip="毒品危害防制條例 §4Ⅰ-Ⅳ:製造罪刑度與販賣相同。"><input type="radio" name="aj-beh" value="製造"><span>製造</span></label>
+    <label class="aj-chip" data-hint data-tip="毒品危害防制條例 §10:施用第一級 6 月-5 年、施用第二級 3 年以下。本罪不適用 §17Ⅰ/Ⅱ 減刑(§17 僅限 §4-§8)。"><input type="checkbox" class="aj-beh" value="施用" checked><span>施用</span></label>
+    <label class="aj-chip" data-hint data-tip="§11Ⅰ-Ⅳ:持有 1-3 年以下;§11Ⅴ/Ⅵ 純質淨重達 10g(第一級)/20g(第二級)→ 加重 1-7 年 / 6 月-5 年。本罪不適用 §17Ⅰ/Ⅱ 減刑。"><input type="checkbox" class="aj-beh" value="持有"><span>持有</span></label>
+    <label class="aj-chip" data-hint data-tip="毒品危害防制條例 §8:轉讓第一級 1-7 年、第二級 6 月-5 年、第三級 3 年以下、第四級 1 年以下。"><input type="checkbox" class="aj-beh" value="轉讓"><span>轉讓</span></label>
+    <label class="aj-chip" data-hint data-tip="毒品危害防制條例 §4Ⅰ-Ⅳ:販賣第一級 死刑/無期/15+ 年、第二級 無期/10+ 年、第三級 7+ 年、第四級 5-12 年。"><input type="checkbox" class="aj-beh" value="販賣"><span>販賣</span></label>
+    <label class="aj-chip" data-hint data-tip="毒品危害防制條例 §5:意圖販賣而持有,比照販賣降一檔。"><input type="checkbox" class="aj-beh" value="意圖販賣而持有"><span>意圖販賣而持有</span></label>
+    <label class="aj-chip" data-hint data-tip="毒品危害防制條例 §4Ⅰ-Ⅳ:運輸罪刑度與販賣相同。"><input type="checkbox" class="aj-beh" value="運輸"><span>運輸</span></label>
+    <label class="aj-chip" data-hint data-tip="毒品危害防制條例 §4Ⅰ-Ⅳ:製造罪刑度與販賣相同。"><input type="checkbox" class="aj-beh" value="製造"><span>製造</span></label>
   </div>
 </div>
 
@@ -662,6 +662,23 @@ const HOLD_ENH = {
   "2": {threshold_g: 20, lo:    6, hi: 5*12},   // §11Ⅵ
 };
 
+// 行為嚴重度,越大越重 — rules.py _BEHAVIOR_SEVERITY 的 JS port。
+const BEHAVIOR_SEVERITY = {
+  "施用": 1, "持有": 2, "轉讓": 3, "意圖販賣而持有": 4,
+  "販賣": 5, "運輸": 5, "製造": 5,
+};
+// §17 只適用 §4-§8 範圍(販賣/運輸/製造/轉讓/意圖販賣而持有);§10 施用 /
+// §11 持有 不在 §17 適用範圍內。
+const ART17_ELIGIBLE = new Set(["販賣", "運輸", "製造", "轉讓", "意圖販賣而持有"]);
+
+function pickPrimaryBehavior(behaviors) {
+  // 從勾選的多個行為中挑刑度最重的一個,當作 binding constraint 的主行為。
+  if (!behaviors || !behaviors.length) return null;
+  return behaviors.slice().sort(
+    (a, b) => (BEHAVIOR_SEVERITY[b] || 0) - (BEHAVIOR_SEVERITY[a] || 0)
+  )[0];
+}
+
 function baseRange(behavior, level, weight_g) {
   if (behavior === "持有" && weight_g != null) {
     const enh = HOLD_ENH[String(level)];
@@ -721,9 +738,16 @@ function fmtRange(lo, hi) {
 let BUCKETS = null;
 
 function readForm() {
+  const behaviors = Array.from(document.querySelectorAll("input.aj-beh:checked"))
+                          .map(el => el.value);
+  const primary = pickPrimaryBehavior(behaviors);
+  // §17 reductions silently disabled when no eligible behavior is selected
+  // (UI still lets you check the box, but the math ignores it).
+  // §17 適用「最重罪」是否屬 §4-§8;若 primary 是 持有/施用,§17 不適用。
+  const art17_eligible = primary != null && ART17_ELIGIBLE.has(primary);
   const flags = {
-    art17_1: document.getElementById("aj-17_1").checked,
-    art17_2: document.getElementById("aj-17_2").checked,
+    art17_1: art17_eligible && document.getElementById("aj-17_1").checked,
+    art17_2: art17_eligible && document.getElementById("aj-17_2").checked,
     art59:   document.getElementById("aj-59").checked,
     self_surrender: document.getElementById("aj-62").checked,
     attempt: document.getElementById("aj-attempt").checked,
@@ -734,7 +758,9 @@ function readForm() {
   return {
     court: document.getElementById("aj-court").value,
     level: parseInt(document.getElementById("aj-level").value, 10),
-    behavior: document.querySelector('input[name="aj-beh"]:checked').value,
+    behaviors,
+    behavior: primary,
+    art17_eligible,
     weight_g: isNaN(wt) ? null : wt,
     flags,
   };
@@ -770,10 +796,21 @@ function lookupBucket(s) {
 
 function render() {
   const s = readForm();
-  const base = baseRange(s.behavior, s.level, s.weight_g);
   const out = document.getElementById("aj-result");
+  // Reflect §17 ineligibility in the UI:當沒有 §4-§8 行為時,把 §17Ⅰ/Ⅱ
+  // chip 半透明 + 加註「不適用」,讓使用者知道勾選沒用。
+  for (const id of ["aj-17_1", "aj-17_2"]) {
+    const lbl = document.getElementById(id).closest("label");
+    if (!s.art17_eligible) lbl.style.opacity = "0.4";
+    else lbl.style.opacity = "1";
+  }
+  if (!s.behavior) {
+    out.innerHTML = `<div class="aj-meta">請至少勾選一個行為態樣。</div>`;
+    return;
+  }
+  const base = baseRange(s.behavior, s.level, s.weight_g);
   if (!base) {
-    out.innerHTML = `<i>此 (行為, 級數) 組合不在法定刑度表中</i>`;
+    out.innerHTML = `<i>此 (${s.behavior}, 第${s.level}級) 組合不在法定刑度表中</i>`;
     return;
   }
   const reduced = applyReductions(base, s.flags);
