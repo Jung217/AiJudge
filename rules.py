@@ -28,6 +28,18 @@ class SentencingConstraint:
 #   Source: 毒品危害防制條例 §4–§11、刑法 §10、§47。
 #   For §4 Ⅰ (第一級販賣/運輸/製造) there is NO 有期徒刑 option in the statute
 #   itself (only 死刑/無期徒刑); a fixed term can only arise from §17 reductions.
+# 毒品條例 §11Ⅴ/Ⅵ 持有加重型(純質淨重達到下表 → 罰責升一檔)。
+# §11Ⅴ:持有第一級毒品純質淨重 10 公克以上 → 1-7 年
+# §11Ⅵ:持有第二級毒品純質淨重 20 公克以上 → 6 月-5 年
+# 第三/四級沒有純質淨重加重型(2020 版本)。
+HOLDING_WEIGHT_THRESHOLD_G: dict[int, float] = {1: 10.0, 2: 20.0}
+
+_ENHANCED_HOLDING_TABLE: dict[tuple[int, int], SentencingConstraint] = {
+    (1, 2020): SentencingConstraint(1 * 12, 7 * 12),   # §11Ⅴ
+    (2, 2020): SentencingConstraint(6, 5 * 12),         # §11Ⅵ
+}
+
+
 _PENALTY_TABLE: dict[tuple[str, int, int], SentencingConstraint] = {
     # 毒品條例 §4 Ⅰ 販賣/運輸/製造第一級毒品：死刑/無期徒刑/15年以上
     # No statutory 有期徒刑 floor below 15Y; fixed-term reachable only via §17 reduction.
@@ -76,8 +88,19 @@ def base_range(
     behavior: str,
     drug_level: int,
     law_version: int = 2020,
+    weight_g: Optional[float] = None,
 ) -> Optional[SentencingConstraint]:
-    """Look up statutory min/max for the given (behavior, drug_level, law_version)."""
+    """Look up statutory min/max for the given (behavior, drug_level, law_version).
+
+    When ``behavior == "持有"`` and ``weight_g`` exceeds the level-specific
+    threshold in :data:`HOLDING_WEIGHT_THRESHOLD_G`, the §11Ⅴ/Ⅵ enhanced
+    range applies instead of the base §11Ⅰ-Ⅳ "low amount" range.
+    """
+    if (behavior == "持有" and weight_g is not None
+            and weight_g >= HOLDING_WEIGHT_THRESHOLD_G.get(drug_level, float("inf"))):
+        enh = _ENHANCED_HOLDING_TABLE.get((drug_level, law_version))
+        if enh is not None:
+            return enh
     return _PENALTY_TABLE.get((behavior, drug_level, law_version))
 
 
@@ -203,6 +226,7 @@ def binding_constraint(
     recidivism: bool = False,
     summary: bool = False,
     law_version: int = 2020,
+    weight_g: Optional[float] = None,
 ) -> Optional[SentencingConstraint]:
     """Strictest applicable sentencing constraint for a (single-count) case.
 
@@ -224,7 +248,7 @@ def binding_constraint(
         return None
     primary = max(behaviors, key=lambda b: _BEHAVIOR_SEVERITY.get(b, 0))
     primary_level = min(drug_levels)
-    base = base_range(primary, primary_level, law_version)
+    base = base_range(primary, primary_level, law_version, weight_g=weight_g)
     if base is None:
         return None
     c = apply_reductions(

@@ -78,6 +78,10 @@ def _cn_to_int(s: str) -> Optional[int]:
 class CaseFeatures:
     jid: str
     jdate: str
+    # Defendant name as captured from 主文 ("" if single-defendant or unparsed).
+    # Used for de-duplication and traceability when one record yields multiple
+    # CaseFeatures via :func:`extract_features_per_defendant`.
+    defendant_name: str = ""
 
     # Objective
     drug_levels: list[int] = field(default_factory=list)
@@ -229,7 +233,9 @@ _DEFENDANT_BOUNDARY_RE = re.compile(
 # multiple counts are not miscounted as separate people.
 _DEFENDANT_CLAUSE_RE = re.compile(
     r"(?:^|。)\s*(?![又再而並亦另])"
-    r"(?P<name>[一-龥○ＯＡ-Ｚ][一-龥○ＯＡ-Ｚ]{0,4})\s*"
+    # Non-greedy {0,4}? so the verb-list lookahead anchors the name boundary
+    # — otherwise "羅中彥共同運輸" gets captured as name="羅中彥共同" + verb=運輸.
+    r"(?P<name>[一-龥○ＯＡ-Ｚ][一-龥○ＯＡ-Ｚ]{0,4}?)\s*"
     r"(?:犯|共同|意圖|施用|販賣|轉讓|運輸|製造|持有|幫助|教唆|基於|連續)"
 )
 _PROBATION_RE = re.compile(
@@ -339,6 +345,40 @@ def _count_defendants(main_text: str) -> int:
     # Drop spurious captures that are clearly not names (offense fragments etc.)
     names = {n for n in names if 1 <= len(n) <= 5}
     return max(1, len(names))
+
+
+def _split_main_by_defendant(main_text: str) -> list[tuple[str, str]]:
+    """Return ``[(name, slice), ...]`` — one per defendant in 主文 order.
+
+    Each ``slice`` is the chunk of 主文 between this defendant's first clause
+    opener and the next one (or end of 主文). 沒收 / 附表 / 應執行刑 phrasing
+    typically attaches to the defendant whose preceding 處有期徒刑 it follows
+    — that naturally falls inside the slice.
+
+    Single-defendant or unrecognised 主文 → ``[("", main_text)]`` so callers
+    can treat the whole text as one defendant. The name is best-effort; for
+    rule-based extraction the slice is what matters.
+    """
+    matches = []
+    for m in _DEFENDANT_CLAUSE_RE.finditer(main_text):
+        name = m.group("name")
+        if 1 <= len(name) <= 5:
+            matches.append((name, m.start()))
+    # Dedup by name, keep first occurrence of each.
+    seen: set[str] = set()
+    uniq: list[tuple[str, int]] = []
+    for name, pos in matches:
+        if name in seen:
+            continue
+        seen.add(name)
+        uniq.append((name, pos))
+    if len(uniq) <= 1:
+        return [("", main_text)]
+    slices: list[tuple[str, str]] = []
+    for i, (name, pos) in enumerate(uniq):
+        end = uniq[i + 1][1] if i + 1 < len(uniq) else len(main_text)
+        slices.append((name, main_text[pos:end]))
+    return slices
 
 
 def _find_drug_levels(text: str) -> list[int]:
@@ -495,6 +535,79 @@ def _extract_detention_days(main_text: str) -> Optional[int]:
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
+
+def _features_from_main_slice(record: Record, main_slice: str,
+                                defendant_name: str,
+                                shared_jfull_flags: dict) -> CaseFeatures:
+    """Build a CaseFeatures from one defendant's 主文 slice.
+
+    Behaviors / drug levels / sentence label / probation / 易科罰金 / 未遂 /
+    aggregate flag are all scoped to the slice (i.e. correct per-defendant).
+    Statutory citation flags (§17 / §59 / §62 / §47) are passed in via
+    ``shared_jfull_flags`` because they live in 理由 段 with shared phrasing
+    across defendants — per-defendant scoping for those is V2.
+    """
+    sentence_months, is_aggregate = _extract_sentence_months(main_slice)
+    return CaseFeatures(
+        jid=record.jid,
+        jdate=record.jdate,
+        defendant_name=defendant_name,
+        drug_levels=_find_drug_levels(main_slice),
+        behaviors=_find_behaviors(main_slice),
+        convicted_behaviors=_find_behaviors(main_slice),
+        convicted_drug_levels=_find_drug_levels(main_slice),
+        n_defendants=1,   # this is one defendant's row
+        n_sentence_counts=len(_CHU_VERDICT_RE.findall(main_slice)),
+        is_aggregate_sentence=is_aggregate,
+        is_attempt=bool(_ATTEMPT_RE.search(main_slice)),
+        max_drug_weight_g=_extract_max_drug_weight_g(main_slice),
+        art17_1_applied=shared_jfull_flags["art17_1"],
+        art17_2_applied=shared_jfull_flags["art17_2"],
+        art59_applied=shared_jfull_flags["art59"],
+        self_surrender=shared_jfull_flags["self_surrender"],
+        recidivism=shared_jfull_flags["recidivism"],
+        sentence_months=sentence_months,
+        detention_days=_extract_detention_days(main_slice),
+        probation_months=_extract_probation_months(main_slice),
+        probation_granted=bool(_PROBATION_RE.search(main_slice)),
+        can_convert_to_fine="易科罰金" in main_slice,
+    )
+
+
+def extract_features_per_defendant(record: Record) -> list[CaseFeatures]:
+    """Return one CaseFeatures per defendant named in 主文.
+
+    Single-defendant judgments → ``[extract_features(record)]``. Multi-defendant
+    judgments are split at 主文 clause openers; each defendant gets a row whose
+    behaviors / drug levels / sentence label / probation flags come from THEIR
+    主文 slice. §17/§59/§62/§47 citations in 理由 段 are still document-wide
+    (V1 limitation — per-defendant scoping for those is harder and deferred).
+    """
+    jfull = record.jfull
+    main_text = _extract_section(jfull, "主文",
+                                  (r"犯\s*罪\s*事\s*實", r"事\s*實\s*及\s*理\s*由",
+                                   r"事\s*實", r"理\s*由"))
+    if not main_text:
+        return [extract_features(record)]
+
+    slices = _split_main_by_defendant(main_text)
+    if len(slices) <= 1:
+        # Single-defendant or unparsed — keep legacy whole-document extraction.
+        return [extract_features(record)]
+
+    shared = {
+        "art17_1": _check_art17(jfull, _ART17_1_CITATION),
+        "art17_2": _check_art17(jfull, _ART17_2_CITATION),
+        "art59": _check_art59(jfull),
+        "self_surrender": _any_match(_ART62_PATTERNS, jfull),
+        "recidivism": _any_match(_ART47_PATTERNS, jfull),
+    }
+    return [
+        _features_from_main_slice(record, sl, name, shared)
+        for name, sl in slices
+        if _SENTENCE_RE.search(sl) or _AGGREGATE_SENTENCE_RE.search(sl)
+    ] or [extract_features(record)]
+
 
 def extract_features(record: Record) -> CaseFeatures:
     jfull = record.jfull

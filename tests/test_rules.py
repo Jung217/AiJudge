@@ -65,6 +65,41 @@ def test_binding_constraint_passes_self_surrender():
                                                 base.max_months / 2)
 
 
+def test_base_range_holding_lvl1_enhanced_above_10g():
+    # 持有第一級毒品純質淨重 ≥ 10g → §11Ⅴ 1-7 年
+    light = base_range("持有", 1, 2020, weight_g=5.0)
+    heavy = base_range("持有", 1, 2020, weight_g=10.0)
+    assert (light.min_months, light.max_months) == (0, 36)   # §11Ⅰ
+    assert (heavy.min_months, heavy.max_months) == (12, 84)  # §11Ⅴ
+    # No weight info → fall back to §11Ⅰ (the conservative pre-amendment range)
+    none_wt = base_range("持有", 1, 2020)
+    assert (none_wt.min_months, none_wt.max_months) == (0, 36)
+
+
+def test_base_range_holding_lvl2_enhanced_above_20g():
+    light = base_range("持有", 2, 2020, weight_g=10.0)
+    heavy = base_range("持有", 2, 2020, weight_g=25.0)
+    assert (light.min_months, light.max_months) == (0, 24)   # §11Ⅱ
+    assert (heavy.min_months, heavy.max_months) == (6, 60)   # §11Ⅵ
+
+
+def test_base_range_holding_lvl3_and_4_no_weight_enhancement():
+    # 第三、四級沒有純質淨重加重型(2020 版本)
+    for lv in (3, 4):
+        c = base_range("持有", lv, 2020, weight_g=1000.0)
+        assert c == base_range("持有", lv, 2020)  # weight ignored
+
+
+def test_binding_constraint_uses_enhanced_holding_when_weight_given():
+    plain = binding_constraint({"持有"}, {2})                   # §11Ⅱ [0, 24]
+    enh = binding_constraint({"持有"}, {2}, weight_g=50.0)      # §11Ⅵ [6, 60]
+    assert (plain.min_months, plain.max_months) == (0, 24)
+    assert (enh.min_months, enh.max_months) == (6, 60)
+    # §17/§59 still compound on top of enhanced range
+    enh_red = binding_constraint({"持有"}, {2}, weight_g=50.0, art17_2=True)
+    assert (enh_red.min_months, enh_red.max_months) == (3, 30)  # ×½
+
+
 def test_recidivism_raises_only_upper_bound_and_caps_at_30y():
     base = SentencingConstraint(60, 12 * 30)       # upper already 30Y
     r = apply_reductions(base, recidivism=True)

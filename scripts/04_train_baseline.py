@@ -23,7 +23,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import multiprocessing as mp
+import os
 import sys
+from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
 import numpy as np
@@ -41,7 +44,7 @@ from sklearn.model_selection import train_test_split
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from features import extract_features  # noqa: E402
+from features import extract_features, extract_features_per_defendant  # noqa: E402
 from models import ModelBundle  # noqa: E402
 from records import Record  # noqa: E402
 from rules import (  # noqa: E402
@@ -74,66 +77,147 @@ def _load_art57(path: Path) -> dict[str, dict[str, str]]:
     return out
 
 
-def build_dataframe(jsonl_path: Path, art57_path: Path | None) -> pd.DataFrame:
-    """Extract features for every case with a non-null sentence_months target."""
-    art57 = _load_art57(art57_path) if art57_path else {}
+def _default_cache_path(jsonl_path: Path, per_defendant: bool,
+                          art57_on: bool) -> Path:
+    """`data/processed/features_<jsonl-stem>_pd|nopd_a57|noa57.parquet`."""
+    tag_pd = "pd" if per_defendant else "nopd"
+    tag_a57 = "a57" if art57_on else "noa57"
+    return Path("data/processed") / f"features_{jsonl_path.stem}_{tag_pd}_{tag_a57}.parquet"
+
+
+def _cache_is_fresh(cache_path: Path, jsonl_path: Path) -> bool:
+    """Cache valid iff exists AND newer than both input jsonl and features.py."""
+    if not cache_path.exists():
+        return False
+    cache_mt = cache_path.stat().st_mtime
+    if jsonl_path.exists() and jsonl_path.stat().st_mtime > cache_mt:
+        return False
+    features_py = Path(__file__).resolve().parent.parent / "features.py"
+    if features_py.exists() and features_py.stat().st_mtime > cache_mt:
+        return False
+    return True
+
+
+def _process_chunk(args: tuple) -> list[dict]:
+    """Worker for build_dataframe: take (lines, per_defendant, art57), return row dicts.
+
+    Must be module-level (Windows spawn pickles it). Uses the same helpers as
+    the serial path so the output is byte-identical.
+    """
+    lines, per_defendant, art57 = args
+    extract = (extract_features_per_defendant if per_defendant
+                else lambda r: [extract_features(r)])
     rows: list[dict] = []
-    with jsonl_path.open(encoding="utf-8") as fh:
-        for line in fh:
-            d = json.loads(line)
-            rec = Record.from_dict({
-                "JID": d["jid"], "JYEAR": d["jyear"], "JCASE": d["jcase"],
-                "JNO": d["jno"], "JDATE": d["jdate"], "JTITLE": d["jtitle"],
-                "JFULL": d["jfull"], "JPDF": d.get("jpdf", ""),
-            })
-            f = extract_features(rec)
+    for line in lines:
+        d = json.loads(line)
+        rec = Record.from_dict({
+            "JID": d["jid"], "JYEAR": d["jyear"], "JCASE": d["jcase"],
+            "JNO": d["jno"], "JDATE": d["jdate"], "JTITLE": d["jtitle"],
+            "JFULL": d["jfull"], "JPDF": d.get("jpdf", ""),
+        })
+        for f in extract(rec):
             if not f.sentence_months:
-                continue  # skip 拘役-only and label-less cases
-            wt = f.max_drug_weight_g
-            court = d.get("court") or (rec.jid[:2] if rec.jid else "")
-            row = {
-                "jid": rec.jid,
-                "jyear": int(rec.jyear) if rec.jyear.isdigit() else 0,
-                "_court": court,
-                "art17_1": int(f.art17_1_applied),
-                "art17_2": int(f.art17_2_applied),
-                "art59": int(f.art59_applied),
-                "recidivism": int(f.recidivism),
-                "self_surrender": int(f.self_surrender),
-                "can_convert_to_fine": int(f.can_convert_to_fine),
-                "n_behaviors": len(f.behaviors),
-                "n_drug_levels": len(f.drug_levels),
-                "n_sentence_counts": f.n_sentence_counts,
-                "is_aggregate_sentence": int(f.is_aggregate_sentence),
-                "is_attempt": int(f.is_attempt),
-                "max_drug_weight_g": wt if wt is not None else -1.0,
-                "has_drug_weight": int(wt is not None),
-                "log_drug_weight": np.log1p(wt) if wt is not None else 0.0,
-                "sentence_months": f.sentence_months,
-                # Bookkeeping columns (underscore prefix → excluded from features).
-                "_jdate": rec.jdate,
-                "_n_def": f.n_defendants,
-                "_summary": int("簡" in rec.jcase),
-                "_conv_beh": ",".join(f.convicted_behaviors),   # rule-clip lookup
-                "_conv_lv": ",".join(map(str, f.convicted_drug_levels)),
-                # Probation label (binary target for the §74 classifier head).
-                # Underscore-prefixed → never enters X (leakage check).
-                "_probation": int(f.probation_granted),
-            }
-            # §57 factors as one-hot per direction (absent → all zeros for that factor)
-            factors = art57.get(rec.jid, {})
-            for fname in ART57_FACTORS:
-                d_ = factors.get(fname, "absent")
-                row[f"a57_{fname}_mit"] = int(d_ == "mitigating")
-                row[f"a57_{fname}_agg"] = int(d_ == "aggravating")
-                row[f"a57_{fname}_neu"] = int(d_ == "neutral")
-            for b in BEHAVIORS:
-                row[f"b_{b}"] = int(b in f.behaviors)
-            for lv in DRUG_LEVELS:
-                row[f"lv_{lv}"] = int(lv in f.drug_levels)
-            for c in COURTS:
-                row[f"court_{c}"] = int(court == c)
-            rows.append(row)
+                continue
+            rows.append(_row_from(rec, d, f, art57))
+    return rows
+
+
+def build_dataframe(jsonl_path: Path, art57_path: Path | None,
+                    per_defendant: bool = True,
+                    cache_path: Path | None = None,
+                    rebuild_cache: bool = False,
+                    workers: int | None = None) -> pd.DataFrame:
+    """Extract features for every case with a non-null sentence_months target.
+
+    When ``per_defendant`` is True (default), multi-defendant judgments are
+    split into one row per defendant via :func:`extract_features_per_defendant`.
+    Otherwise the legacy single-row-per-judgment path is used.
+
+    Parquet cache: if ``cache_path`` is supplied (or auto-derived) and is fresh
+    (newer than input jsonl AND features.py), load it instead of re-extracting.
+    Saves ~30-40 minutes on the 68k 5-院 dataset.
+    """
+    if cache_path is None:
+        cache_path = _default_cache_path(jsonl_path, per_defendant,
+                                           art57_path is not None)
+    if not rebuild_cache and _cache_is_fresh(cache_path, jsonl_path):
+        print(f"  features cache hit: {cache_path}")
+        return pd.read_parquet(cache_path)
+    if cache_path.exists():
+        print(f"  features cache stale, rebuilding → {cache_path}")
+    else:
+        print(f"  features cache miss, building → {cache_path}")
+
+    art57 = _load_art57(art57_path) if art57_path else {}
+    lines = jsonl_path.read_text(encoding="utf-8").splitlines()
+    n = len(lines)
+    n_workers = workers or min(mp.cpu_count(), 12)
+    if n_workers <= 1 or n < 200:
+        rows = _process_chunk((lines, per_defendant, art57))
+    else:
+        # Aim for ~4 chunks per worker for load balance, min 50 lines per chunk.
+        chunk_size = max(50, n // (n_workers * 4))
+        chunks = [(lines[i:i + chunk_size], per_defendant, art57)
+                   for i in range(0, n, chunk_size)]
+        print(f"  build_dataframe: {n} 列 / {len(chunks)} chunks / {n_workers} workers")
+        rows = []
+        with ProcessPoolExecutor(max_workers=n_workers) as ex:
+            for sub in ex.map(_process_chunk, chunks):
+                rows.extend(sub)
+    df = pd.DataFrame(rows)
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    df.to_parquet(cache_path, index=False)
+    return df
+
+
+def _row_from(rec, d: dict, f, art57: dict) -> dict:
+    wt = f.max_drug_weight_g
+    court = d.get("court") or (rec.jid[:2] if rec.jid else "")
+    # Per-defendant suffix:單一被告判決 defendant_name 為空,jid 保持原樣;
+    # 多被告判決,defendant_name 接在後面,讓每列 unique 又能 trace 回原案。
+    row_jid = rec.jid + (f"#{f.defendant_name}" if f.defendant_name else "")
+    row: dict = {
+        "jid": row_jid,
+        "jyear": int(rec.jyear) if rec.jyear.isdigit() else 0,
+        "_court": court,
+        "art17_1": int(f.art17_1_applied),
+        "art17_2": int(f.art17_2_applied),
+        "art59": int(f.art59_applied),
+        "recidivism": int(f.recidivism),
+        "self_surrender": int(f.self_surrender),
+        "can_convert_to_fine": int(f.can_convert_to_fine),
+        "n_behaviors": len(f.behaviors),
+        "n_drug_levels": len(f.drug_levels),
+        "n_sentence_counts": f.n_sentence_counts,
+        "is_aggregate_sentence": int(f.is_aggregate_sentence),
+        "is_attempt": int(f.is_attempt),
+        "max_drug_weight_g": wt if wt is not None else -1.0,
+        "has_drug_weight": int(wt is not None),
+        "log_drug_weight": np.log1p(wt) if wt is not None else 0.0,
+        "sentence_months": f.sentence_months,
+        # Bookkeeping columns (underscore prefix → excluded from features).
+        "_jdate": rec.jdate,
+        "_n_def": f.n_defendants,
+        "_summary": int("簡" in rec.jcase),
+        "_conv_beh": ",".join(f.convicted_behaviors),
+        "_conv_lv": ",".join(map(str, f.convicted_drug_levels)),
+        # Probation label (binary target for the §74 classifier head).
+        # Underscore-prefixed → never enters X (leakage check).
+        "_probation": int(f.probation_granted),
+    }
+    factors = art57.get(rec.jid, {})
+    for fname in ART57_FACTORS:
+        d_ = factors.get(fname, "absent")
+        row[f"a57_{fname}_mit"] = int(d_ == "mitigating")
+        row[f"a57_{fname}_agg"] = int(d_ == "aggravating")
+        row[f"a57_{fname}_neu"] = int(d_ == "neutral")
+    for b in BEHAVIORS:
+        row[f"b_{b}"] = int(b in f.behaviors)
+    for lv in DRUG_LEVELS:
+        row[f"lv_{lv}"] = int(lv in f.drug_levels)
+    for c in COURTS:
+        row[f"court_{c}"] = int(court == c)
+    return row
     return pd.DataFrame(rows)
 
 
@@ -180,6 +264,13 @@ def _make_quantile_model(alpha: float, seed: int, rounds: int) -> xgb.XGBRegress
     )
 
 
+# Joint quantile attempt (XGBoost 2.x supports `quantile_alpha=[α1, α2, ...]`)
+# was tested 2026-05-15 and rejected: XGBoost does NOT enforce monotonicity
+# between the alpha-outputs, so raw crossings WENT UP (12% → 21%) for a tiny
+# pinball gain. Independent quantile + CQR δ-shift + post-clip monotone pass
+# remains the production path. See task #9 in plan.md.
+
+
 def _make_classifier(seed: int, rounds: int, scale_pos_weight: float = 1.0) -> xgb.XGBClassifier:
     return xgb.XGBClassifier(
         n_estimators=rounds,
@@ -209,8 +300,16 @@ def _fit(model, X_tr, y_tr, val_frac: float = 0.15):
     recent (still-in-the-past) slice — a legitimate validation set. For the
     holdout mode the order doesn't matter. Works for any XGBoost estimator
     (regressor or classifier) that accepts ``eval_set``.
+
+    Models without ``early_stopping_rounds`` (e.g. joint multi-quantile, whose
+    eval_metric can't handle multi-output predictions) fit on the full slice
+    with no eval_set.
     """
     n = len(X_tr)
+    has_es = getattr(model, "early_stopping_rounds", None)
+    if not has_es:
+        model.fit(X_tr, y_tr, verbose=False)
+        return model
     if n < 50:
         model.set_params(early_stopping_rounds=None)
         model.fit(X_tr, y_tr, verbose=False)
@@ -251,12 +350,17 @@ def _constraints_for(df_rows: pd.DataFrame) -> list:
             continue
         behaviors = {b for b in row["_conv_beh"].split(",") if b}
         levels = {int(lv) for lv in row["_conv_lv"].split(",") if lv}
+        # max_drug_weight_g = -1.0 sentinel when no 純質淨重 was extracted;
+        # only pass through when the case actually has a weight finding.
+        wt = float(row["max_drug_weight_g"])
+        wt_arg = wt if wt > 0 else None
         out.append(binding_constraint(
             behaviors, levels,
             art17_1=bool(row["art17_1"]), art17_2=bool(row["art17_2"]),
             art59=bool(row["art59"]), attempt=bool(row["is_attempt"]),
             self_surrender=bool(row["self_surrender"]),
             recidivism=bool(row["recidivism"]), summary=bool(row["_summary"]),
+            weight_g=wt_arg,
         ))
     return out
 
@@ -596,6 +700,12 @@ def _print_importance(model, feat_cols: list[str], top: int = 15,
 # ---------------------------------------------------------------------------
 
 def main() -> int:
+    # Line-buffer stdout so progress shows up live in `tee` / log files even
+    # when the runtime is hours and the OS would otherwise block-buffer 8KB.
+    try:
+        sys.stdout.reconfigure(line_buffering=True)
+    except AttributeError:
+        pass
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--in", dest="inp", type=Path,
                     default=Path("data/filtered/north5_drug_all.jsonl"))
@@ -611,9 +721,16 @@ def main() -> int:
                     help="skip conformal δ-shift on p25/p75 (ablation; "
                          "with this flag, [p25, p75] coverage is the raw "
                          "quantile-head coverage, typically ~45%%)")
+    ap.add_argument("--per-defendant", action="store_true",
+                    help="V1 per-defendant scoping (experimental). Splits "
+                         "multi-defendant 判決 by 主文 clause and yields one "
+                         "row per defendant, BUT shares §17/§59/§62 flags "
+                         "across all defendants — known to inject label noise "
+                         "(see plan §13.4). Default is the production single-row "
+                         "path which drops multi-defendant 判決.")
     ap.add_argument("--keep-multi-defendant", action="store_true",
-                    help="include judgments whose 主文 names >1 defendant "
-                         "(noisy per-defendant labels)")
+                    help="(single-row path only) include 主文 names >1 "
+                         "defendant rows instead of dropping them.")
     ap.add_argument("--folds", type=int, default=5,
                     help="walk-forward temporal CV folds (expanding window)")
     ap.add_argument("--holdout", action="store_true",
@@ -621,22 +738,36 @@ def main() -> int:
                          "split (quick sanity check — NOT a valid headline metric)")
     ap.add_argument("--save", type=Path, default=None,
                     help="after evaluation, retrain on ALL rows and dump a ModelBundle")
+    ap.add_argument("--features-cache", type=Path, default=None,
+                    help="parquet cache for build_dataframe output. Default is "
+                         "data/processed/features_<jsonl-stem>_<flags>.parquet. "
+                         "Auto-invalidates when input jsonl or features.py is newer.")
+    ap.add_argument("--rebuild-cache", action="store_true",
+                    help="force rebuild of features cache (skip mtime check)")
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--rounds", type=int, default=500,
                     help="max boosting rounds (early-stopping enabled)")
     args = ap.parse_args()
 
     art57_path = None if args.no_art57 or not args.art57 else Path(args.art57)
-    df = build_dataframe(args.inp, art57_path)
+    per_defendant = args.per_defendant
+    df = build_dataframe(args.inp, art57_path, per_defendant=per_defendant,
+                         cache_path=args.features_cache,
+                         rebuild_cache=args.rebuild_cache)
     n_all = len(df)
-    n_multi = int((df["_n_def"] > 1).sum())
-    if not args.keep_multi_defendant:
-        df = df[df["_n_def"] == 1].reset_index(drop=True)
+    if per_defendant:
+        # _n_def is always 1 in per-defendant mode (each row IS one defendant)
+        df = df.reset_index(drop=True)
+        mode_msg = "per-defendant rows (multi-defendant 判決 split into 1 row each)"
+    else:
+        n_multi = int((df["_n_def"] > 1).sum())
+        if not args.keep_multi_defendant:
+            df = df[df["_n_def"] == 1].reset_index(drop=True)
+        mode_msg = (f"legacy single-row mode, {n_multi} multi-defendant "
+                    f"{'kept' if args.keep_multi_defendant else 'dropped'}")
     rule_clip = not args.no_rule_clip
 
-    print(f"loaded {n_all} cases with sentence_months "
-          f"({n_multi} multi-defendant {'kept' if args.keep_multi_defendant else 'dropped'}) "
-          f"→ {len(df)} rows")
+    print(f"loaded {n_all} rows with sentence_months ({mode_msg}) → {len(df)} rows")
     print(f"  sentence_months: median={df.sentence_months.median():.0f}  "
           f"mean={df.sentence_months.mean():.1f}  max={df.sentence_months.max()}")
     print(f"  date span: {df['_jdate'].min()} – {df['_jdate'].max()}")

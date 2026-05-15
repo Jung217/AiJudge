@@ -1,5 +1,10 @@
 """Feature-extraction helpers (partial — focuses on recently added logic)."""
-from features import _count_defendants, extract_features
+from features import (
+    _count_defendants,
+    _split_main_by_defendant,
+    extract_features,
+    extract_features_per_defendant,
+)
 from records import Record
 
 
@@ -85,3 +90,46 @@ def test_extract_features_probation_arabic_year():
         "臺灣基隆地方法院刑事判決\n主文\n"
         "乙○○販賣第三級毒品，處有期徒刑1年6月，緩刑3年。\n犯罪事實\n..."))
     assert f.probation_granted is True
+
+
+def test_split_main_by_defendant_single_returns_one_slice():
+    main = "陳○○施用第二級毒品，處有期徒刑肆月。"
+    out = _split_main_by_defendant(main)
+    assert len(out) == 1
+    assert out[0][0] == ""           # no per-defendant split needed
+    assert "陳○○" in out[0][1]
+
+
+def test_split_main_by_defendant_multi():
+    main = ("羅中彥共同運輸第二級毒品，處有期徒刑5年6月。"
+            "陳德名共同運輸第二級毒品，處有期徒刑7年2月。"
+            "王健明販賣第三級毒品，處有期徒刑1年10月。")
+    out = _split_main_by_defendant(main)
+    names = [n for n, _ in out]
+    assert "羅中彥" in names and "陳德名" in names and "王健明" in names
+    slices = {n: s for n, s in out}
+    assert "5年6月" in slices["羅中彥"]
+    assert "7年2月" in slices["陳德名"]
+    assert "1年10月" in slices["王健明"]
+
+
+def test_extract_features_per_defendant_single_returns_one_row():
+    out = extract_features_per_defendant(_rec(
+        "臺灣基隆地方法院刑事簡易判決\n主文\n"
+        "甲○○施用第二級毒品，處有期徒刑3月，如易科罰金，以新臺幣1000元折算1日。\n犯罪事實\n..."))
+    assert len(out) == 1
+    assert out[0].sentence_months == 3
+
+
+def test_extract_features_per_defendant_multi_yields_correct_sentences():
+    out = extract_features_per_defendant(_rec(
+        "臺灣基隆地方法院刑事判決\n主文\n"
+        "羅中彥共同運輸第二級毒品，處有期徒刑5年6月。"
+        "陳德名共同運輸第二級毒品，處有期徒刑7年2月。\n犯罪事實\n..."))
+    assert len(out) == 2
+    by_name = {f.defendant_name: f for f in out}
+    assert by_name["羅中彥"].sentence_months == 66   # 5y6m
+    assert by_name["陳德名"].sentence_months == 86   # 7y2m
+    # Both rows correctly tagged as 運輸 from their own slice
+    for f in out:
+        assert "運輸" in f.convicted_behaviors

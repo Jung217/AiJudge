@@ -115,12 +115,24 @@ def predict_with_constraints(
                    dtype=float)
     raw = {"p50": float(bundle.sentence_regressor.predict(x)[0])}
     meta = bundle.metadata or {}
-    if bundle.sentence_quantile_p25 is not None:
-        raw["p25"] = (float(bundle.sentence_quantile_p25.predict(x)[0])
-                       + float(meta.get("delta25", 0.0)))
-    if bundle.sentence_quantile_p75 is not None:
-        raw["p75"] = (float(bundle.sentence_quantile_p75.predict(x)[0])
-                       + float(meta.get("delta75", 0.0)))
+    # If the bundle was saved with a joint quantile model, both
+    # sentence_quantile_p25 and sentence_quantile_p75 point at the SAME
+    # XGBRegressor that returns a (1, 2) prediction matrix. Otherwise each
+    # field is its own single-output model (legacy bundles).
+    if meta.get("joint_quantile") and bundle.sentence_quantile_p25 is not None:
+        pred = bundle.sentence_quantile_p25.predict(x)
+        alphas = meta.get("quantile_alphas") or [0.25, 0.75]
+        idx_25 = alphas.index(0.25) if 0.25 in alphas else 0
+        idx_75 = alphas.index(0.75) if 0.75 in alphas else 1
+        raw["p25"] = float(pred[0, idx_25]) + float(meta.get("delta25", 0.0))
+        raw["p75"] = float(pred[0, idx_75]) + float(meta.get("delta75", 0.0))
+    else:
+        if bundle.sentence_quantile_p25 is not None:
+            raw["p25"] = (float(bundle.sentence_quantile_p25.predict(x)[0])
+                          + float(meta.get("delta25", 0.0)))
+        if bundle.sentence_quantile_p75 is not None:
+            raw["p75"] = (float(bundle.sentence_quantile_p75.predict(x)[0])
+                          + float(meta.get("delta75", 0.0)))
     result = constrain_sentence(raw, constraint)
     if bundle.probation_classifier is not None:
         prob = float(bundle.probation_classifier.predict_proba(x)[0, 1])
