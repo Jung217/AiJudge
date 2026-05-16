@@ -623,14 +623,60 @@ def _features_from_main_slice(record: Record, main_slice: str,
     )
 
 
+def _defendant_scoped_text(jfull: str, name: str, names_all: list[str],
+                             pad: int = 250) -> str:
+    """Per-defendant 理由段 scope: 含此被告名字的 paragraph 拼起來。
+
+    對每個 ``name`` 在 ``jfull`` 中的出現位置取 ±pad 字 window;合併重疊
+    視窗。同時若視窗也含另一被告名(共犯),trim 在那個名字邊界 — 避免
+    A 的 §17 文段被 B 撿去。
+
+    回傳一個拼接字串(含原文順序),給 _check_art17 / _check_art59 用。
+    """
+    if not name:
+        return jfull
+    other_names = [n for n in names_all if n != name and len(n) >= 2]
+    ranges: list[tuple[int, int]] = []
+    for m in re.finditer(re.escape(name), jfull):
+        lo = max(0, m.start() - pad)
+        hi = min(len(jfull), m.end() + pad)
+        # Truncate at the nearest OTHER defendant name boundary to avoid
+        # 共犯 cross-talk.
+        for on in other_names:
+            for nm in re.finditer(re.escape(on), jfull[lo:hi]):
+                abs_pos = lo + nm.start()
+                if abs_pos < m.start():
+                    lo = max(lo, abs_pos + len(on))
+                elif abs_pos > m.end():
+                    hi = min(hi, abs_pos)
+        ranges.append((lo, hi))
+    if not ranges:
+        return ""  # name 沒在 jfull 中出現 → 沒有任何 §17/§59 可歸給 ta
+    ranges.sort()
+    merged: list[list[int]] = [list(ranges[0])]
+    for lo, hi in ranges[1:]:
+        if lo <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], hi)
+        else:
+            merged.append([lo, hi])
+    return "\n。\n".join(jfull[lo:hi] for lo, hi in merged)
+
+
 def extract_features_per_defendant(record: Record) -> list[CaseFeatures]:
     """Return one CaseFeatures per defendant named in 主文.
 
-    Single-defendant judgments → ``[extract_features(record)]``. Multi-defendant
-    judgments are split at 主文 clause openers; each defendant gets a row whose
-    behaviors / drug levels / sentence label / probation flags come from THEIR
-    主文 slice. §17/§59/§62/§47 citations in 理由 段 are still document-wide
-    (V1 limitation — per-defendant scoping for those is harder and deferred).
+    V2(experimental,實測 worse than single-row baseline):對每個被告,
+    §17/§59/§62 偵測只在「含該被告名字的 paragraph」(±250 字 window,trim
+    其他被告名邊界)內跑。理論上避免 A 的 §17 被誤抓到 B,但實測 MAE
+    2.49 → 4.00、gt 越界率 2.35% → 4.63%,因為:
+      1. 250 字 window 太窄,真實適用 §17 的判決常在其他段落
+      2. reject regex 在縮小 window 後反而抓不到鄰近的駁回語
+      3. 多了 3,400+ 多被告 rows,但缺乏可靠 reduction signal
+    要真正 work 需要更精準的 NER + 完整 anaphora resolution(共犯/被告/上訴
+    人 等代名稱對齊),不是局部 regex 能解的。
+
+    保留 opt-in (`--per-defendant`) 給後續精緻化用;production 默認
+    single-row mode(filter out 多被告判決,~3.5% 樣本損失)。
     """
     jfull = record.jfull
     main_text = _extract_section(jfull, "主文",
@@ -644,18 +690,22 @@ def extract_features_per_defendant(record: Record) -> list[CaseFeatures]:
         # Single-defendant or unparsed — keep legacy whole-document extraction.
         return [extract_features(record)]
 
-    shared = {
-        "art17_1": _check_art17(jfull, _ART17_1_CITATION),
-        "art17_2": _check_art17(jfull, _ART17_2_CITATION),
-        "art59": _check_art59(jfull),
-        "self_surrender": _any_match(_ART62_PATTERNS, jfull),
-        "recidivism": _any_match(_ART47_PATTERNS, jfull),
-    }
-    return [
-        _features_from_main_slice(record, sl, name, shared)
-        for name, sl in slices
-        if _SENTENCE_RE.search(sl) or _AGGREGATE_SENTENCE_RE.search(sl)
-    ] or [extract_features(record)]
+    all_names = [name for name, _ in slices if name]
+    out: list[CaseFeatures] = []
+    for name, sl in slices:
+        if not (_SENTENCE_RE.search(sl) or _AGGREGATE_SENTENCE_RE.search(sl)):
+            continue
+        # Per-defendant scoped text for §17/§59/§62/§47 detection.
+        scoped = _defendant_scoped_text(jfull, name, all_names) if name else jfull
+        flags = {
+            "art17_1": _check_art17(scoped, _ART17_1_CITATION),
+            "art17_2": _check_art17(scoped, _ART17_2_CITATION),
+            "art59": _check_art59(scoped),
+            "self_surrender": _any_match(_ART62_PATTERNS, scoped),
+            "recidivism": _any_match(_ART47_PATTERNS, scoped),
+        }
+        out.append(_features_from_main_slice(record, sl, name, flags))
+    return out or [extract_features(record)]
 
 
 def extract_features(record: Record) -> CaseFeatures:
