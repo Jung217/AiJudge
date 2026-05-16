@@ -433,7 +433,13 @@ def evaluate_fold(
     y = df["sentence_months"].astype(float).values
     yp = df["_probation"].astype(int).values
 
-    median_model = _fit(_make_model(seed, rounds), X[tr_idx], y[tr_idx])
+    # Seed ensemble for the median head:訓練 3 顆不同 seed 的 model,test 時
+    # 平均預測。standard variance-reduction trick。p25/p75 維持單 seed 以省訓練。
+    median_models = []
+    for s_off in range(3):
+        m = _fit(_make_model(seed + s_off, rounds), X[tr_idx], y[tr_idx])
+        median_models.append(m)
+    median_model = median_models[0]   # SHAP / importance uses first one
     q25_model = _fit(_make_quantile_model(0.25, seed, rounds), X[tr_idx], y[tr_idx])
     q75_model = _fit(_make_quantile_model(0.75, seed, rounds), X[tr_idx], y[tr_idx])
 
@@ -442,7 +448,11 @@ def evaluate_fold(
 
     y_te = y[te_idx]
     X_te = X[te_idx]
-    p50_raw = np.asarray(median_model.predict(X_te), dtype=float)
+    # Median = average of ensemble seed predictions
+    p50_raw = np.mean(
+        [np.asarray(m.predict(X_te), dtype=float) for m in median_models],
+        axis=0,
+    )
     p25_raw = np.asarray(q25_model.predict(X_te), dtype=float) + delta25
     p75_raw = np.asarray(q75_model.predict(X_te), dtype=float) + delta75
 

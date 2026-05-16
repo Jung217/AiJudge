@@ -13,22 +13,24 @@
 | 量刑（月）抽取準確率（n=94 標註樣本）| **100% exact match, MAE 0.0** |
 | §17/§59 偵測 F1（n=100）| **0.93–1.00** |
 | 行為 / 毒品級數抽取 Jaccard | **0.95 / 0.97** |
-| **XGBoost p50 MAE**(walk-forward 5 折,pooled n=51,944,5 院混合)| **2.52 月** vs. median 基線 6.00 |
-| **基隆 test 列 MAE**(n=4,484,同一個 5 院 model 評估)| **1.82 月**(比基隆-only model 的 2.20 還好 ~17%)|
-| **R²** / **±3 月命中率** / **±6 月命中率** | **0.708 / 87.7% / 93.3%** |
-| **Quantile pinball loss** (p25 / p50 / p75) | **0.98 / 1.26 / 1.17** |
+| **XGBoost p50 MAE**(walk-forward 5 折,pooled n=51,944,5 院混合)| **2.49 月** vs. median 基線 6.00 |
+| **基隆 test 列 MAE**(n=4,484,同一個 5 院 model 評估)| **1.79 月**(比基隆-only model 的 2.20 還好 ~19%)|
+| **R²** / **±3 月命中率** / **±6 月命中率** | **0.717 / 87.8% / 93.4%** |
+| **Quantile pinball loss** (p25 / p50 / p75) | **0.98 / 1.25 / 1.17** |
 | **[p25, p75] 區間覆蓋率**(CQR δ-shift 校正後)| **50.1%**(目標 ~50%,完美命中)|
 | **緩刑分類器**(基底 2.87%,sqrt(pos_w)+F1-max threshold)| **PR-AUC 0.367(13× 基底)**,P 34.5% / R 71.7% / acc 95.27% |
 | **法定刑度越界率**(rule-clipped)| **0.00%**(raw 預測 3.4% → clip 後 0%)|
 
-**Per-court MAE**:基隆 **1.82**、新北 2.22、士林 2.23、臺北 2.46、桃園 3.14 月 — 桃園變異最大、基隆最穩。
+**Per-court MAE**:基隆 **1.79**、新北 2.21、士林 2.20、臺北 2.44、桃園 3.10 月 — 桃園變異最大、基隆最穩。
 
-**Per-primary-behavior MAE**(5 院 pooled):施用 **1.12 月**(n=25k)、持有 **1.06**(n=19k)、轉讓 **2.55**;販賣 **8.87**(n=5.9k)、運輸 **26.22**、製造 **15.06**、意圖販賣而持有 **11.47**。
+**Per-primary-behavior MAE**(5 院 pooled):施用 **1.11 月**(n=25k)、持有 **1.06**(n=19k)、轉讓 **2.31**;販賣 **8.70**(n=5.9k)、運輸 **26.07**、製造 **15.10**、意圖販賣而持有 **11.36**。
 
-**改善路徑**(三項實驗,MAE 2.85 → 2.52,基隆 2.06 → 1.82,raw quantile crossings 18.7% → 6.5%):
+**改善路徑**(五項實驗,MAE 2.85 → 2.49,基隆 2.06 → 1.79,販賣 10.36 → 8.70,raw quantile crossings 18.7% → 7.3%):
 1. 加 `sum_individual_months` 特徵(數罪併罰個刑加總) → MAE 2.85→2.63
 2. §17/§59 reject regex 增強(辯護人主張+駁回模式、未因而查獲、尚無...之適用) → 重罪 -1 月,raw crossings 20.8%→17.5%
-3. p50 head 改用 `reg:absoluteerror`(L1 loss,對重罪 outliers 穩健) → MAE 2.62→2.52,raw crossings 17.5%→**6.5%**
+3. p50 head 改用 `reg:absoluteerror`(L1 loss,對重罪 outliers 穩健) → MAE 2.62→2.52,raw crossings 17.5%→6.5%
+4. learning rate 0.05→0.03、rounds 500→1000、early-stopping 30→50(L1 loss 喜歡 small-step / many-rounds)→ MAE 2.52→2.51
+5. p50 head 改 3-seed ensemble(平均 seed 42/43/44 預測)→ MAE 2.51→**2.49**,販賣 -0.07 月、5 院全部微正向
 
 ## 亮點
 
