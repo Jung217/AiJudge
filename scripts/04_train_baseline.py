@@ -232,18 +232,18 @@ def feature_columns(df: pd.DataFrame) -> list[str]:
 # ---------------------------------------------------------------------------
 
 def _make_model(seed: int, rounds: int) -> xgb.XGBRegressor:
-    # reg:absoluteerror 直接最小化 MAE (L1 loss),對重罪 outliers 比 MSE 穩健
-    # 許多 — squared error 會被 200+ 月的應執行刑 outliers 拉走梯度,L1 不會。
-    # 實驗 3 改用後 MAE 應該降而非升 (因為我們就是用 MAE 當 headline metric)。
+    # reg:absoluteerror + learning_rate=0.03 + 更多 rounds:L1 loss 梯度 magnitude
+    # 恆定(只看 sign),所以每步增量比 MSE 小,適合 small-step / many-rounds 設定。
+    # early stopping 30 rounds 自動截止過擬合的點。
     return xgb.XGBRegressor(
-        n_estimators=rounds,
-        learning_rate=0.05,
+        n_estimators=max(rounds, 1000),
+        learning_rate=0.03,
         max_depth=6,
         subsample=0.8,
         colsample_bytree=0.8,
         objective="reg:absoluteerror",
         random_state=seed,
-        early_stopping_rounds=30,
+        early_stopping_rounds=50,
         eval_metric="mae",
     )
 
@@ -297,7 +297,28 @@ def _pinball(y_true: np.ndarray, y_pred: np.ndarray, alpha: float) -> float:
     return float(np.mean(np.maximum(alpha * diff, (alpha - 1) * diff)))
 
 
-def _fit(model, X_tr, y_tr, val_frac: float = 0.15):
+def _time_decay_weights(jdates: np.ndarray, half_life_years: float = 3.0) -> np.ndarray:
+    """指數時間衰減 sample weight:最新案件 w=1,half_life 年前 w=0.5。
+
+    Fold-wise MAE 顯示後期 fold(2023+)MAE 比早期(2018-2020)高 70%+,
+    暗示 distribution shift(修法、量刑風氣)。加 time-decay 讓 model 偏重
+    學近期 pattern,trade-off 是早期 fold MAE 可能略升。
+    """
+    if len(jdates) == 0:
+        return np.ones(0, dtype=float)
+    # jdates 是 yyyyMMdd 字串。轉成 days since epoch 的數值,免 pandas datetime 開銷。
+    js = np.asarray(jdates).astype(str)
+    yr = np.array([int(s[:4]) if len(s) >= 8 else 0 for s in js])
+    mo = np.array([int(s[4:6]) if len(s) >= 8 else 0 for s in js])
+    dy = np.array([int(s[6:8]) if len(s) >= 8 else 0 for s in js])
+    # 月份 ≈ 30 天近似;不需要精確日數
+    days = yr * 365 + mo * 30 + dy
+    max_d = days.max()
+    delta_yr = (max_d - days) / 365.25
+    return np.exp(-delta_yr * np.log(2) / half_life_years)
+
+
+def _fit(model, X_tr, y_tr, val_frac: float = 0.15, sample_weight=None):
     """Fit with early stopping on the *tail* of the training rows.
 
     In walk-forward mode X_tr is already time-ordered, so the tail is the most
@@ -312,14 +333,23 @@ def _fit(model, X_tr, y_tr, val_frac: float = 0.15):
     n = len(X_tr)
     has_es = getattr(model, "early_stopping_rounds", None)
     if not has_es:
-        model.fit(X_tr, y_tr, verbose=False)
+        kw = {"sample_weight": sample_weight} if sample_weight is not None else {}
+        model.fit(X_tr, y_tr, verbose=False, **kw)
         return model
     if n < 50:
         model.set_params(early_stopping_rounds=None)
-        model.fit(X_tr, y_tr, verbose=False)
+        kw = {"sample_weight": sample_weight} if sample_weight is not None else {}
+        model.fit(X_tr, y_tr, verbose=False, **kw)
         return model
     cut = max(1, int(n * (1.0 - val_frac)))
-    model.fit(X_tr[:cut], y_tr[:cut], eval_set=[(X_tr[cut:], y_tr[cut:])], verbose=False)
+    kw_train = {}
+    kw_eval = {}
+    if sample_weight is not None:
+        kw_train["sample_weight"] = sample_weight[:cut]
+        kw_eval["sample_weight_eval_set"] = [sample_weight[cut:]]
+    model.fit(X_tr[:cut], y_tr[:cut],
+               eval_set=[(X_tr[cut:], y_tr[cut:])],
+               verbose=False, **kw_train, **kw_eval)
     return model
 
 
