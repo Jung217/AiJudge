@@ -146,14 +146,14 @@ XGBoost 的 quantile head 受正則化影響，原始預測的 `[p25, p75]` 經�
 
 排名前列的因素，與法律實務上的量刑邏輯**高度一致**：
 
-- **行為類型「販賣」**居首：大宗加重型行為對刑度有最大解釋力
-- **是否得易科罰金**反映案件嚴重程度（短期自由刑才能易科），排第 2
-- **毒品級別第四／第一**緊隨其後
-- **刑法第 59 條酌減**仍位列前 5
-- **數罪併罰**（`is_aggregate_sentence`）、**未遂**（`is_attempt`）、**法院（court_TP 等）**也都進前 15，模型有自動區分各院量刑風格
-- **§17Ⅱ 偵審自白**雖在重要性表外（5 院聯訓後判決訊號被稀釋），但在規則層仍套用 ½ 減刑
+- **毒品第一級**居首:第一級毒品法定刑度最重(死刑/無期/15 年+),解釋力最大
+- **是否得易科罰金**反映案件嚴重程度(短期自由刑才能易科)
+- **§47 累犯**進前 3:累犯對刑期有顯著上拉
+- **court_KL(基隆)**進前 4:模型確實學到了「基隆判決偏輕」的院別風格
+- **§17Ⅱ 偵審自白**、**數罪併罰**、**§62 自首** 都進前 15:減刑事由解釋力跟法律直覺一致
+- **個刑加總(sum_individual_months)**(我們新加的特徵)排第 11:對數罪併罰應執行刑案件提供強錨點
 
-這個結果**驗證了模型確實學到了合理的判決邏輯**，而非依賴噪音特徵。
+這個結果**驗證了模型確實學到了合理的判決邏輯**,而非依賴噪音特徵。注意 L1 loss(實驗 3 後採用)的 gain 量級與 squared error 不可直接比較;絕對值小但相對排序仍可信。
 
 ## 五、限制與誤差來源
 
@@ -461,7 +461,7 @@ XGBoost 的 quantile head 受正則化影響，原始預測的 `[p25, p75]` 經�
 研究方法、資料處理流程、評估指標皆公開於 GitHub 倉庫，可供同儕審查。
 </p>
 
-<small>Last updated: 2026-05-18</small>
+<small>Last updated: 2026-05-19</small>
 
 <script>
 const baseColor = '#0969da';
@@ -502,7 +502,7 @@ new Chart(document.getElementById('chart-mae'), {
     labels: ['全用中位數預測', '全用平均數預測', 'XGBoost(raw 預測)', 'XGBoost + 法定刑度 clip'],
     datasets: [{
       label: '平均絕對誤差(月)',
-      data: [6.00, 7.50, 3.00, 2.85],
+      data: [6.00, 7.50, 2.79, 2.49],
       backgroundColor: [mutedColor, mutedColor, '#7e9bbf', baseColor],
       borderRadius: 4,
     }]
@@ -510,7 +510,7 @@ new Chart(document.getElementById('chart-mae'), {
   options: {
     responsive: true, indexAxis: 'y',
     plugins: {
-      title: { display: true, text: '圖二:模型預測誤差與基線比較(walk-forward 5 折,pooled n=51,940,北部 5 院)', font: { size: 14 } },
+      title: { display: true, text: '圖二:模型預測誤差與基線比較(walk-forward 5 折,pooled n=51,944,北部 5 院)', font: { size: 14 } },
       legend: { display: false }
     },
     scales: { x: { title: { display: true, text: '月(越小越準)' } } }
@@ -524,7 +524,7 @@ new Chart(document.getElementById('chart-by-court'), {
               '臺北 TP\n(n=7,847)', '桃園 TY\n(n=16,773)'],
     datasets: [{
       label: '平均絕對誤差(月)',
-      data: [2.06, 2.52, 2.65, 2.74, 3.53],
+      data: [1.79, 2.21, 2.20, 2.44, 3.10],
       backgroundColor: [baseColor, '#56b870', '#56b870', '#56b870', '#d18616'],
       borderRadius: 4,
     }]
@@ -548,7 +548,7 @@ new Chart(document.getElementById('chart-quantile'), {
     labels: ['p25 pinball', 'p50 pinball (中位數)', 'p75 pinball', '[p25,p75] 覆蓋率 (%)'],
     datasets: [{
       label: '分位數迴歸頭表現',
-      data: [1.03, 1.43, 1.31, 49.7],
+      data: [0.98, 1.25, 1.17, 49.6],
       backgroundColor: ['#56b870', baseColor, '#56b870', accentColor],
       borderRadius: 4,
     }]
@@ -573,7 +573,7 @@ new Chart(document.getElementById('chart-by-crime'), {
               '意圖販賣而持有 (n=119)', '製造 (n=264)', '運輸 (n=879)'],
     datasets: [{
       label: '平均絕對誤差(月)',
-      data: [1.25, 1.17, 2.80, 10.29, 12.17, 17.76, 28.76],
+      data: [1.11, 1.06, 2.31, 8.70, 11.36, 15.10, 26.07],
       backgroundColor: ['#56b870', '#56b870', '#56b870', '#d18616',
                         '#d18616', '#cc4128', '#cc4128'],
       borderRadius: 4,
@@ -594,12 +594,12 @@ new Chart(document.getElementById('chart-by-crime'), {
 new Chart(document.getElementById('chart-importance'), {
   type: 'bar',
   data: {
-    labels: ['販賣毒品(b_販賣)', '得易科罰金', '運輸毒品', '第四級毒品', '刑法 §59 酌減',
-              '未遂(§25Ⅱ)', '數罪併罰應執行刑', '持有毒品', '第一級毒品', '第三級毒品',
-              '§17Ⅱ 偵審自白', '§57 品行(aggravating)', '§57 損害(neutral)', '§62 自首', '施用毒品'],
+    labels: ['第一級毒品', '得易科罰金', '§47 累犯', 'court_KL(基隆)', '毒品級別數',
+              '§17Ⅱ 偵審自白', '數罪併罰應執行刑', '施用毒品', '第四級毒品', '持有毒品',
+              '個刑加總(sum_individual_months)', '第二級毒品', '判決年度 (jyear)', '§62 自首', '販賣毒品'],
     datasets: [{
       label: '特徵重要性(gain)',
-      data: [118524, 27348, 21747, 20099, 18471, 14678, 12630, 9303, 8735, 6937, 5853, 5575, 4122, 3928, 3905],
+      data: [398, 117, 102, 43, 39, 33, 30, 28, 27, 25, 24, 22, 20, 18, 14],
       backgroundColor: baseColor,
       borderRadius: 4,
     }]
