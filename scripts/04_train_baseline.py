@@ -232,13 +232,16 @@ def feature_columns(df: pd.DataFrame) -> list[str]:
 # ---------------------------------------------------------------------------
 
 def _make_model(seed: int, rounds: int) -> xgb.XGBRegressor:
+    # reg:absoluteerror 直接最小化 MAE (L1 loss),對重罪 outliers 比 MSE 穩健
+    # 許多 — squared error 會被 200+ 月的應執行刑 outliers 拉走梯度,L1 不會。
+    # 實驗 3 改用後 MAE 應該降而非升 (因為我們就是用 MAE 當 headline metric)。
     return xgb.XGBRegressor(
         n_estimators=rounds,
         learning_rate=0.05,
         max_depth=6,
         subsample=0.8,
         colsample_bytree=0.8,
-        objective="reg:squarederror",
+        objective="reg:absoluteerror",
         random_state=seed,
         early_stopping_rounds=30,
         eval_metric="mae",
