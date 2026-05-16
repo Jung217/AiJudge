@@ -102,6 +102,9 @@ class CaseFeatures:
     n_sentence_counts: int = 0
     is_aggregate_sentence: bool = False   # sentence_months came from 應執行
     is_attempt: bool = False              # 主文 含「未遂」(刑法§25Ⅱ 得減輕)
+    # 主文中所有「處有期徒刑 X 月」個刑加總(排除 應執行 本身)。對數罪併罰
+    # 案件能直接告訴模型「個刑總和」是強 signal — 單罪案件等同 sentence_months。
+    sum_individual_months: int = 0
 
     # Statutory reductions / enhancements
     art17_1_applied: bool = False   # 毒品§17Ⅰ 供出來源因而查獲
@@ -476,6 +479,24 @@ _CHU_VERDICT_RE = re.compile(r"處\s*有\s*期\s*徒\s*刑")
 _ATTEMPT_RE = re.compile(r"未\s*遂")
 
 
+def _sum_individual_sentences(main_text: str) -> int:
+    """數罪併罰案件的個刑加總(排除 應執行刑 本身);單罪案件回傳 0。
+
+    避免 label leakage:單罪 sum = sentence_months 直接洩漏標籤,因此只在
+    主文有 ≥ 2 筆「處有期徒刑」時回傳加總。對數罪併罰案件,個刑加總是
+    強 signal — 模型藉此能直接看到「這個案件有 N 個宣告刑、總和 M 月」,
+    不必只看 [0, 30Y] 的 aggregate-only constraint。
+    """
+    yng = _AGGREGATE_SENTENCE_RE.search(main_text)
+    scope = main_text[:yng.start()] if yng else main_text
+    months: list[int] = []
+    for m in _SENTENCE_RE.finditer(scope):
+        v = _months_from_match(m)
+        if v is not None:
+            months.append(v)
+    return sum(months) if len(months) >= 2 else 0
+
+
 def _extract_sentence_months(main_text: str) -> tuple[Optional[int], bool]:
     """Returns ``(months, is_aggregate)``.
 
@@ -560,6 +581,7 @@ def _features_from_main_slice(record: Record, main_slice: str,
         n_sentence_counts=len(_CHU_VERDICT_RE.findall(main_slice)),
         is_aggregate_sentence=is_aggregate,
         is_attempt=bool(_ATTEMPT_RE.search(main_slice)),
+        sum_individual_months=_sum_individual_sentences(main_slice),
         max_drug_weight_g=_extract_max_drug_weight_g(main_slice),
         art17_1_applied=shared_jfull_flags["art17_1"],
         art17_2_applied=shared_jfull_flags["art17_2"],
@@ -661,6 +683,7 @@ def extract_features(record: Record) -> CaseFeatures:
         n_sentence_counts=len(_CHU_VERDICT_RE.findall(main_text)),
         is_aggregate_sentence=is_aggregate,
         is_attempt=bool(_ATTEMPT_RE.search(main_text)),
+        sum_individual_months=_sum_individual_sentences(main_text),
         max_drug_weight_g=_extract_max_drug_weight_g(behavior_text),
         art17_1_applied=_check_art17(jfull, _ART17_1_CITATION),
         art17_2_applied=_check_art17(jfull, _ART17_2_CITATION),

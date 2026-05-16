@@ -191,6 +191,7 @@ def _row_from(rec, d: dict, f, art57: dict) -> dict:
         "n_sentence_counts": f.n_sentence_counts,
         "is_aggregate_sentence": int(f.is_aggregate_sentence),
         "is_attempt": int(f.is_attempt),
+        "sum_individual_months": int(f.sum_individual_months),
         "max_drug_weight_g": wt if wt is not None else -1.0,
         "has_drug_weight": int(wt is not None),
         "log_drug_weight": np.log1p(wt) if wt is not None else 0.0,
