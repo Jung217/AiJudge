@@ -916,6 +916,76 @@ function heatmapHtml(s) {
     </div>`;
 }
 
+// --- 2D court × factor heatmap grid ---------------------------------------
+// Same marginal-effect idea, but sliced per court: shows how the SAME
+// reduction/aggravation factor shifts the median sentence differently across
+// the 5 northern courts (for the currently selected behavior + drug level).
+const COURT_NAMES = {KL: "基隆", TP: "臺北", SL: "士林", PC: "新北", TY: "桃園"};
+const GRID_COURTS = ["KL", "TP", "SL", "PC", "TY"];
+
+function marginalDeltaCourt(bit, court, behavior, level) {
+  const groups = {};
+  for (const k of Object.keys(BUCKETS)) {
+    const [c, b, lv, fs] = k.split("|");
+    if (c !== court || b !== behavior || lv !== String(level)) continue;
+    if (!fs || fs.length !== 7) continue;
+    const other = fs.slice(0, bit) + "_" + fs.slice(bit + 1);
+    (groups[other] || (groups[other] = {}))[fs[bit]] = BUCKETS[k];
+  }
+  let num = 0, den = 0;
+  for (const gk in groups) {
+    const g = groups[gk];
+    if (g["0"] && g["1"]) {
+      const w = g["0"].n + g["1"].n;
+      num += (g["1"].p50 - g["0"].p50) * w;
+      den += w;
+    }
+  }
+  return den > 0 ? num / den : null;
+}
+
+function courtGridHtml(s) {
+  if (!BUCKETS || !s.behavior) return "";
+  const rows = HEAT_FACTORS.filter(f => {
+    if ((f.key === "art17_1" || f.key === "art17_2")
+        && !ART17_ELIGIBLE.has(s.behavior)) return false;
+    return true;
+  }).map(f => ({
+    f, vals: GRID_COURTS.map(c => marginalDeltaCourt(f.bit, c, s.behavior, s.level)),
+  })).filter(r => r.vals.some(v => v != null));
+
+  if (!rows.length) {
+    return `<div class="aj-row"><div class="aj-output-label">各法院 × 各事由 影響熱力圖</div>
+      <div class="aj-meta">此 (${s.behavior}, 第${s.level}級) 在各院的減刑配對樣本不足,無法成圖。</div></div>`;
+  }
+  const maxAbs = Math.max(1, ...rows.flatMap(r => r.vals)
+                                     .filter(v => v != null).map(Math.abs));
+  const cell = (v) => {
+    if (v == null) return `<td style="padding:6px 4px;text-align:center;color:#bbb;background:#fafafa">—</td>`;
+    const sign = v > 0 ? "+" : (v < 0 ? "−" : "");
+    const mag = Math.abs(v);
+    const lab = mag < 1 ? "0" : mag.toFixed(0);
+    const fg = v > 0 ? "#cf222e" : (v < 0 ? "#0969da" : "#57606a");
+    return `<td title="平均 ${sign}${mag.toFixed(1)} 月"
+       style="padding:6px 4px;text-align:center;background:${heatColor(v, maxAbs)};
+       color:${fg};font-weight:600;font-size:0.85em">${sign}${lab}</td>`;
+  };
+  const head = GRID_COURTS.map(c =>
+    `<th style="padding:6px 4px;font-size:0.78em;color:#57606a;font-weight:600">${COURT_NAMES[c]}</th>`).join("");
+  const body = rows.map(r =>
+    `<tr><td style="padding:6px 10px 6px 0;font-size:0.82em;white-space:nowrap">${r.f.label}</td>`
+    + r.vals.map(cell).join("") + "</tr>").join("");
+  return `
+    <div class="aj-row">
+      <div class="aj-output-label">各法院 × 各事由 影響熱力圖 — (${s.behavior}, 第${s.level}級) · 單位:月</div>
+      <table style="border-collapse:collapse;margin-top:6px">
+        <thead><tr><th></th>${head}</tr></thead>
+        <tbody>${body}</tbody>
+      </table>
+      <div class="aj-meta" style="margin-top:6px">每格 = 該事由在該院對同類案件中位刑期的平均影響(月);藍=減刑、紅=加重,色深者影響大,「—」表該院此組合樣本不足。可看出同一減刑事由在各院的落差。</div>
+    </div>`;
+}
+
 function render() {
   const s = readForm();
   const out = document.getElementById("aj-result");
@@ -967,6 +1037,7 @@ function render() {
   out.innerHTML = `
     ${bucketHtml}
     ${heatmapHtml(s)}
+    ${courtGridHtml(s)}
     <div class="aj-bucket">
       <div class="aj-row">
         <div class="aj-output-label">法定刑度上下限 ${enhTag}</div>
