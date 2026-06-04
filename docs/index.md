@@ -794,6 +794,128 @@ function lookupBucket(s) {
   return null;
 }
 
+// --- Factor-contribution heatmap (data-derived marginal effects) ----------
+// Not the real XGBoost SHAP (that needs the tree model). Instead, for each
+// active reduction/aggravation flag we measure its *average* effect on the
+// median sentence directly from the bucket data: average (p50_on − p50_off)
+// over every bucket pair that differs ONLY in that one flag bit. This is an
+// honest "all else equal, this factor shifts the sentence by X months"
+// estimate, rendered as a colored strip (blue=減刑, red=加重).
+const HEAT_FACTORS = [
+  {key: "art17_1",        bit: 0, label: "§17Ⅰ 供出來源"},
+  {key: "art17_2",        bit: 1, label: "§17Ⅱ 自白"},
+  {key: "art59",          bit: 2, label: "§59 酌減"},
+  {key: "self_surrender", bit: 3, label: "§62 自首"},
+  {key: "attempt",        bit: 4, label: "§25Ⅱ 未遂"},
+  {key: "summary",        bit: 5, label: "簡易判決"},
+  {key: "recidivism",     bit: 6, label: "§47 累犯"},
+];
+
+function marginalDelta(bit, s) {
+  // Average (p50_on − p50_off) over bucket pairs differing only in `bit`.
+  // First try pairs matching the selected behavior+level (most relevant);
+  // fall back to all behaviors/levels if that slice has no usable pair.
+  function collect(restrict) {
+    const groups = {};
+    for (const k of Object.keys(BUCKETS)) {
+      const [c, b, lv, fs] = k.split("|");
+      if (!fs || fs.length !== 7) continue;
+      if (restrict && (b !== s.behavior || lv !== String(s.level))) continue;
+      const other = fs.slice(0, bit) + "_" + fs.slice(bit + 1);
+      const gk = `${c}|${b}|${lv}|${other}`;
+      (groups[gk] || (groups[gk] = {}))[fs[bit]] = BUCKETS[k];
+    }
+    let num = 0, den = 0;
+    for (const gk in groups) {
+      const g = groups[gk];
+      if (g["0"] && g["1"]) {
+        const w = g["0"].n + g["1"].n;
+        num += (g["1"].p50 - g["0"].p50) * w;
+        den += w;
+      }
+    }
+    return den > 0 ? num / den : null;
+  }
+  const d = collect(true);
+  return d != null ? d : collect(false);
+}
+
+function baselineMedian(s) {
+  // p50 of the same court/behavior/level with NO reduction flags set.
+  if (BUCKETS[`${s.court}|${s.behavior}|${s.level}|0000000`]) {
+    return BUCKETS[`${s.court}|${s.behavior}|${s.level}|0000000`].p50;
+  }
+  let num = 0, den = 0;   // fallback: all courts, same behavior/level
+  for (const k of Object.keys(BUCKETS)) {
+    const [c, b, lv, fs] = k.split("|");
+    if (b === s.behavior && lv === String(s.level) && fs === "0000000") {
+      num += BUCKETS[k].p50 * BUCKETS[k].n;
+      den += BUCKETS[k].n;
+    }
+  }
+  return den > 0 ? num / den : null;
+}
+
+function heatColor(delta, maxAbs) {
+  const t = maxAbs > 0 ? Math.min(1, Math.abs(delta) / maxAbs) : 0;
+  const a = (0.15 + 0.55 * t).toFixed(2);
+  if (delta < -1e-9) return `rgba(9, 105, 218, ${a})`;    // 減刑 → 藍
+  if (delta > 1e-9)  return `rgba(207, 34, 46, ${a})`;    // 加重 → 紅
+  return "rgba(140, 140, 140, 0.15)";
+}
+
+function heatmapHtml(s) {
+  if (!BUCKETS) return "";
+  const active = HEAT_FACTORS.filter(f => s.flags[f.key]);
+  if (!active.length) {
+    return `<div class="aj-row"><div class="aj-output-label">因子影響拆解</div>
+      <div class="aj-meta">未勾選任何減刑 / 加重事由 — 勾選後這裡會顯示各因子對刑期的平均影響。</div></div>`;
+  }
+  const base = baselineMedian(s);
+  const cells = active.map(f => ({...f, delta: marginalDelta(f.bit, s)}))
+                      .filter(f => f.delta != null);
+  if (!cells.length) {
+    return `<div class="aj-row"><div class="aj-output-label">因子影響拆解</div>
+      <div class="aj-meta">此案件類型樣本不足,無法估計各因子影響。</div></div>`;
+  }
+  const maxAbs = Math.max(...cells.map(c => Math.abs(c.delta)));
+  const net = (base != null ? base : 0) + cells.reduce((a, c) => a + c.delta, 0);
+
+  const baseCell = base != null
+    ? `<div style="display:inline-flex;flex-direction:column;gap:2px;padding:8px 12px;
+         border-radius:8px;background:rgba(140,140,140,0.12);min-width:90px;text-align:center">
+         <span style="font-size:0.72em;color:#57606a">基準(無減刑)</span>
+         <span style="font-weight:600;font-size:1.05em">${fmtMonths(base)}</span></div>`
+    : "";
+  const factorCells = cells.map(c => {
+    const sign = c.delta > 0 ? "+" : "−";
+    const mag = Math.abs(c.delta);
+    const txt = mag < 1 ? `${(mag * 30).toFixed(0)} 日` : `${mag.toFixed(1)} 月`;
+    return `<div style="display:inline-flex;flex-direction:column;gap:2px;padding:8px 12px;
+         border-radius:8px;background:${heatColor(c.delta, maxAbs)};min-width:90px;text-align:center"
+         title="把「${c.label}」這個事由開/關,北部 5 院同類案件中位刑期平均差 ${sign}${txt}">
+         <span style="font-size:0.72em;color:#24292f">${c.label}</span>
+         <span style="font-weight:700;font-size:1.05em;color:${c.delta > 0 ? '#cf222e' : '#0969da'}">${sign}${txt}</span></div>`;
+  }).join("");
+
+  return `
+    <div class="aj-row">
+      <div class="aj-output-label">因子影響拆解 — 各事由對中位刑期的平均影響(資料推估,非模型 SHAP)</div>
+      <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:6px">
+        ${baseCell}
+        ${base != null ? '<span style="color:#8c959f;font-size:1.2em">→</span>' : ''}
+        ${factorCells}
+        <span style="color:#8c959f;font-size:1.2em">=</span>
+        <div style="display:inline-flex;flex-direction:column;gap:2px;padding:8px 12px;
+             border-radius:8px;background:rgba(9,105,218,0.10);min-width:90px;text-align:center;
+             border:1px solid rgba(9,105,218,0.35)">
+          <span style="font-size:0.72em;color:#57606a">推估刑期</span>
+          <span style="font-weight:700;font-size:1.05em;color:#0969da">${fmtMonths(Math.max(0, net))}</span></div>
+      </div>
+      <div class="aj-meta" style="margin-top:6px">藍色 = 往下減刑、紅色 = 往上加重,顏色越深影響越大。數字為「該事由開關後同類案件中位刑期的平均落差」,與左上角實際判決中位數可能略有出入(因各事由非完全獨立)。</div>
+    </div>`;
+}
+
 function render() {
   const s = readForm();
   const out = document.getElementById("aj-result");
@@ -844,6 +966,7 @@ function render() {
   }
   out.innerHTML = `
     ${bucketHtml}
+    ${heatmapHtml(s)}
     <div class="aj-bucket">
       <div class="aj-row">
         <div class="aj-output-label">法定刑度上下限 ${enhTag}</div>
