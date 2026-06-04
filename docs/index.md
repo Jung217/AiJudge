@@ -794,13 +794,16 @@ function lookupBucket(s) {
   return null;
 }
 
-// --- Factor-contribution heatmap (data-derived marginal effects) ----------
-// Not the real XGBoost SHAP (that needs the tree model). Instead, for each
-// active reduction/aggravation flag we measure its *average* effect on the
-// median sentence directly from the bucket data: average (p50_on − p50_off)
-// over every bucket pair that differs ONLY in that one flag bit. This is an
-// honest "all else equal, this factor shifts the sentence by X months"
-// estimate, rendered as a colored strip (blue=減刑, red=加重).
+// --- Factor-contribution waterfall (sequential conditional-mean) -----------
+// Each SELECTED condition (behavior, drug level, court, each reduction flag)
+// gets an additive contribution in months. We add conditions one at a time and
+// take each contribution = E[sentence | conditions so far] − E[sentence |
+// conditions before it]. Using the bucket `mean` field (weighted by n) the
+// conditional means are EXACT, so by telescoping:
+//     base + Σ contributions = E[sentence | all selected conditions]
+// i.e. the waterfall sums exactly to the predicted (mean) sentence. This is a
+// data-derived attribution, not the real XGBoost SHAP (which needs the tree
+// model in-browser), but it is exactly additive and interpretable.
 const HEAT_FACTORS = [
   {key: "art17_1",        bit: 0, label: "§17Ⅰ 供出來源"},
   {key: "art17_2",        bit: 1, label: "§17Ⅱ 自白"},
@@ -811,51 +814,6 @@ const HEAT_FACTORS = [
   {key: "recidivism",     bit: 6, label: "§47 累犯"},
 ];
 
-function marginalDelta(bit, s) {
-  // Average (p50_on − p50_off) over bucket pairs differing only in `bit`.
-  // First try pairs matching the selected behavior+level (most relevant);
-  // fall back to all behaviors/levels if that slice has no usable pair.
-  function collect(restrict) {
-    const groups = {};
-    for (const k of Object.keys(BUCKETS)) {
-      const [c, b, lv, fs] = k.split("|");
-      if (!fs || fs.length !== 7) continue;
-      if (restrict && (b !== s.behavior || lv !== String(s.level))) continue;
-      const other = fs.slice(0, bit) + "_" + fs.slice(bit + 1);
-      const gk = `${c}|${b}|${lv}|${other}`;
-      (groups[gk] || (groups[gk] = {}))[fs[bit]] = BUCKETS[k];
-    }
-    let num = 0, den = 0;
-    for (const gk in groups) {
-      const g = groups[gk];
-      if (g["0"] && g["1"]) {
-        const w = g["0"].n + g["1"].n;
-        num += (g["1"].p50 - g["0"].p50) * w;
-        den += w;
-      }
-    }
-    return den > 0 ? num / den : null;
-  }
-  const d = collect(true);
-  return d != null ? d : collect(false);
-}
-
-function baselineMedian(s) {
-  // p50 of the same court/behavior/level with NO reduction flags set.
-  if (BUCKETS[`${s.court}|${s.behavior}|${s.level}|0000000`]) {
-    return BUCKETS[`${s.court}|${s.behavior}|${s.level}|0000000`].p50;
-  }
-  let num = 0, den = 0;   // fallback: all courts, same behavior/level
-  for (const k of Object.keys(BUCKETS)) {
-    const [c, b, lv, fs] = k.split("|");
-    if (b === s.behavior && lv === String(s.level) && fs === "0000000") {
-      num += BUCKETS[k].p50 * BUCKETS[k].n;
-      den += BUCKETS[k].n;
-    }
-  }
-  return den > 0 ? num / den : null;
-}
-
 function heatColor(delta, maxAbs) {
   const t = maxAbs > 0 ? Math.min(1, Math.abs(delta) / maxAbs) : 0;
   const a = (0.15 + 0.55 * t).toFixed(2);
@@ -864,55 +822,93 @@ function heatColor(delta, maxAbs) {
   return "rgba(140, 140, 140, 0.15)";
 }
 
-function heatmapHtml(s) {
-  if (!BUCKETS) return "";
-  const active = HEAT_FACTORS.filter(f => s.flags[f.key]);
-  if (!active.length) {
-    return `<div class="aj-row"><div class="aj-output-label">因子影響拆解</div>
-      <div class="aj-meta">未勾選任何減刑 / 加重事由 — 勾選後這裡會顯示各因子對刑期的平均影響。</div></div>`;
+// E[sentence] over all buckets matching a partial condition. `cond` =
+// {behavior, level, court, reqBits:[idx...]}; null fields are left free;
+// reqBits lists flag positions that must equal '1' (unselected flags free).
+// Returns {mean, n} weighted by bucket counts, or null if no bucket matches.
+function condMean(cond) {
+  let num = 0, n = 0;
+  for (const k of Object.keys(BUCKETS)) {
+    const [c, b, lv, fs] = k.split("|");
+    if (!fs || fs.length !== 7) continue;
+    if (cond.behavior && b !== cond.behavior) continue;
+    if (cond.level != null && lv !== String(cond.level)) continue;
+    if (cond.court && c !== cond.court) continue;
+    if (cond.reqBits.some(i => fs[i] !== "1")) continue;
+    const v = BUCKETS[k];
+    num += v.p50 * v.n;     // weight bucket medians by case count
+    n += v.n;
   }
-  const base = baselineMedian(s);
-  const cells = active.map(f => ({...f, delta: marginalDelta(f.bit, s)}))
-                      .filter(f => f.delta != null);
-  if (!cells.length) {
-    return `<div class="aj-row"><div class="aj-output-label">因子影響拆解</div>
-      <div class="aj-meta">此案件類型樣本不足,無法估計各因子影響。</div></div>`;
-  }
-  const maxAbs = Math.max(...cells.map(c => Math.abs(c.delta)));
-  const net = (base != null ? base : 0) + cells.reduce((a, c) => a + c.delta, 0);
+  return n > 0 ? {mean: num / n, n} : null;
+}
 
-  const baseCell = base != null
-    ? `<div style="display:inline-flex;flex-direction:column;gap:2px;padding:8px 12px;
-         border-radius:8px;background:rgba(140,140,140,0.12);min-width:90px;text-align:center">
-         <span style="font-size:0.72em;color:#57606a">基準(無減刑)</span>
-         <span style="font-weight:600;font-size:1.05em">${fmtMonths(base)}</span></div>`
-    : "";
-  const factorCells = cells.map(c => {
-    const sign = c.delta > 0 ? "+" : "−";
-    const mag = Math.abs(c.delta);
-    const txt = mag < 1 ? `${(mag * 30).toFixed(0)} 日` : `${mag.toFixed(1)} 月`;
-    return `<div style="display:inline-flex;flex-direction:column;gap:2px;padding:8px 12px;
-         border-radius:8px;background:${heatColor(c.delta, maxAbs)};min-width:90px;text-align:center"
-         title="把「${c.label}」這個事由開/關,北部 5 院同類案件中位刑期平均差 ${sign}${txt}">
-         <span style="font-size:0.72em;color:#24292f">${c.label}</span>
-         <span style="font-weight:700;font-size:1.05em;color:${c.delta > 0 ? '#cf222e' : '#0969da'}">${sign}${txt}</span></div>`;
-  }).join("");
+function waterfallHtml(s) {
+  if (!BUCKETS) return "";
+  // Build the ordered list of selected conditions to attribute.
+  const steps = [];                       // {label, cond}
+  const cond = {behavior: null, level: null, court: null, reqBits: []};
+  steps.push({label: `行為:${s.behavior}`, mutate: () => cond.behavior = s.behavior});
+  steps.push({label: `第${s.level}級毒品`, mutate: () => cond.level = s.level});
+  steps.push({label: `${COURT_NAMES[s.court] || s.court}地院`, mutate: () => cond.court = s.court});
+  for (const f of HEAT_FACTORS) {
+    if (s.flags[f.key]) steps.push({label: f.label, mutate: () => cond.reqBits.push(f.bit)});
+  }
+
+  const base = condMean(cond);            // global mean before any condition
+  if (!base) return "";
+  let prev = base.mean;
+  const rows = [];
+  for (const st of steps) {
+    st.mutate();
+    const cm = condMean(cond);
+    if (!cm) { rows.push({label: st.label, delta: null}); continue; }
+    rows.push({label: st.label, delta: cm.mean - prev, n: cm.n});
+    prev = cm.mean;
+  }
+  const final = prev;
+  const maxAbs = Math.max(1e-6, ...rows.filter(r => r.delta != null)
+                                       .map(r => Math.abs(r.delta)));
+  const TRACK = 150;                       // px half-width of the diverging bar
+
+  const fmtDelta = (d) => {
+    const sign = d > 0 ? "+" : (d < 0 ? "−" : "");
+    const mag = Math.abs(d);
+    return sign + (mag < 1 ? `${(mag * 30).toFixed(0)} 日` : `${mag.toFixed(1)} 月`);
+  };
+  const rowHtml = (label, d, n) => {
+    if (d == null) {
+      return `<div style="display:flex;align-items:center;gap:8px;padding:3px 0">
+        <span style="width:120px;font-size:0.84em;text-align:right;color:#8c959f">${label}</span>
+        <span style="width:${2 * TRACK}px;text-align:center;color:#bbb;font-size:0.8em">樣本不足</span>
+        <span style="width:64px"></span></div>`;
+    }
+    const mag = Math.abs(d) / maxAbs * TRACK;
+    const left = d >= 0 ? TRACK : TRACK - mag;
+    const col = d > 0 ? "#cf222e" : "#0969da";
+    return `<div style="display:flex;align-items:center;gap:8px;padding:3px 0"
+      title="加入「${label}」後,同類案件中位刑期變動 ${fmtDelta(d)}(n=${n})">
+      <span style="width:120px;font-size:0.84em;text-align:right">${label}</span>
+      <span style="position:relative;width:${2 * TRACK}px;height:18px;background:linear-gradient(#f0f3f6,#f0f3f6) no-repeat center/1px 100%">
+        <span style="position:absolute;top:2px;left:${left}px;width:${Math.max(2, mag)}px;height:14px;background:${heatColor(d, maxAbs)};border-radius:3px"></span>
+      </span>
+      <span style="width:64px;font-size:0.86em;font-weight:700;color:${col}">${fmtDelta(d)}</span></div>`;
+  };
+  const anchorHtml = (label, val) =>
+    `<div style="display:flex;align-items:center;gap:8px;padding:5px 0">
+      <span style="width:120px;font-size:0.84em;text-align:right;color:#57606a">${label}</span>
+      <span style="width:${2 * TRACK}px;text-align:center;font-weight:700;font-size:1.05em">${fmtMonths(Math.max(0, val))}</span>
+      <span style="width:64px"></span></div>`;
 
   return `
     <div class="aj-row">
-      <div class="aj-output-label">因子影響拆解 — 各事由對中位刑期的平均影響(資料推估,非模型 SHAP)</div>
-      <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:6px">
-        ${baseCell}
-        ${base != null ? '<span style="color:#8c959f;font-size:1.2em">→</span>' : ''}
-        ${factorCells}
-        <span style="color:#8c959f;font-size:1.2em">=</span>
-        <div style="display:inline-flex;flex-direction:column;gap:2px;padding:8px 12px;
-             border-radius:8px;background:rgba(9,105,218,0.10);min-width:90px;text-align:center;
-             border:1px solid rgba(9,105,218,0.35)">
-          <span style="font-size:0.72em;color:#57606a">推估刑期</span>
-          <span style="font-weight:700;font-size:1.05em;color:#0969da">${fmtMonths(Math.max(0, net))}</span></div>
+      <div class="aj-output-label">因子貢獻拆解 — 每個選取條件對「中位刑期」的貢獻(資料推估,逐步可加)</div>
+      <div style="margin-top:6px">
+        ${anchorHtml("基準(全體中位)", base.mean)}
+        ${rows.map(r => rowHtml(r.label, r.delta, r.n)).join("")}
+        <div style="border-top:1px solid #d0d7de;margin:4px 0 0"></div>
+        ${anchorHtml("推估中位刑期", final)}
       </div>
-      <div class="aj-meta" style="margin-top:6px">藍色 = 往下減刑、紅色 = 往上加重,顏色越深影響越大。數字為「該事由開關後同類案件中位刑期的平均落差」,與左上角實際判決中位數可能略有出入(因各事由非完全獨立)。</div>
+      <div class="aj-meta" style="margin-top:6px">藍 = 往下拉低刑期、紅 = 往上推高,長條長度 = 影響大小。每一列 = 在前面所有條件成立下「再加上這一條件」後,北部 5 院同類案件中位刑期(依件數加權)的變動;基準 + 各列貢獻 = 推估中位刑期(精確相等)。貢獻值會依條件的加入順序而異(行為→級別→法院→各事由),此為資料推估,非真實模型 SHAP。</div>
     </div>`;
 }
 
@@ -1036,7 +1032,7 @@ function render() {
   }
   out.innerHTML = `
     ${bucketHtml}
-    ${heatmapHtml(s)}
+    ${waterfallHtml(s)}
     ${courtGridHtml(s)}
     <div class="aj-bucket">
       <div class="aj-row">
