@@ -15,7 +15,7 @@ shap>=0.44
 
 # NLP (phase 2 — install when needed)
 # ckip-transformers>=0.3.4
-# anthropic>=0.40  # for LLM-based §57 factor extraction
+# §57 量刑因子改採啟發式 regex (scripts/art57_extract.py)，無外部 LLM API 依賴
 
 # Serving (phase 5)
 fastapi>=0.110

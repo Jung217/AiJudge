@@ -37,7 +37,7 @@
 - **Citation-anchored §17/§59 偵測**：跳過 recital 樣板（按⋯定有明文）+ 句子收斂窗口 + 應用/拒絕詞偵測 → §17Ⅱ F1 0.93、§59 F1 1.00
 - **多被告/多罪併罰應執行刑抽取**：偵測「。<被告名>犯」boundary 區分定執行刑歸屬，量刑 exact-match 100%
 - **純質淨重 regex**：支援阿拉伯（`0.226`）+ 中文小數（`零點貳貳陸` / `拾陸點柒零`）
-- **§57 量刑因子 LLM 抽取**：`scripts/07_llm_extract_factors.py` 已 wire 到 Anthropic Claude API(Haiku 4.5 + prompt cache + 並行 + resume),每件輸出 10 因子 × {mitigating, aggravating, neutral, absent};需設 `ANTHROPIC_API_KEY` 才實跑,全量 5,809 件估約 USD 17–45
+- **§57 量刑因子啟發式抽取**：`scripts/art57_extract.py` 用高精度 regex/pattern 鎖定判決書「爰審酌⋯」量刑段,抽 10 因子 × {mitigating, aggravating, neutral, absent} + exact-substring evidence,**零外部 API**;產出 `data/processed/art57_factors.jsonl`(基隆 1,598 件),由 `04_train_baseline._load_art57` 編成 `a57_*` 特徵
 - **多 head 輸出**(plan §5.2):p25 / p50 / p75 三個 quantile head(`reg:quantileerror`)+ 緩刑二元分類 head;`models.predict_with_constraints` 一次回 `{p25, p50, p75, probation_prob}`,post-clip 強制單調
 - **Quantile 校正**(conformal δ-shift):每折拿 val tail 殘差算 `δ_α = quantile(y-ŷ, α)`,test 時 `pred + δ`,把 [p25, p75] 區間覆蓋率從 44.9% → **51.4%**(目標 50%);δ 存進 ModelBundle metadata,推論時自動套用
 - **法定刑度約束**:用主文-only 已定罪行為 lookup + §17Ⅰ/§17Ⅱ/§59/§25Ⅱ 未遂/§62 自首 各自 ½ 減刑(§70 compound)+ 簡易判決 floor ½ + 數罪併罰 30 年上限 + **§11Ⅴ/Ⅵ 持有純質淨重加重型**(第一級 ≥10g / 第二級 ≥20g 自動切換到加重刑度範圍) → 模型預測越界率 ~4% → clip 後 **0%**
@@ -55,8 +55,9 @@
 | `scripts/04_train_baseline.py` | XGBoost p25/p50/p75 quantile + 緩刑分類 + rule-clip(walk-forward CV)|
 | `scripts/05_sample_for_labeling.py` | 人工標註抽樣（--prefill）|
 | `scripts/06_evaluate_labels.py` | features.py 對 ground-truth 評估 |
-| `scripts/07_llm_extract_factors.py` | §57 量刑因子 Claude API 抽取(prompt cache + resume)|
-| `data/processed/art57_factors.jsonl` | §57 因子（5 sub-agent 平行抽 1,598 件）|
+| `scripts/art57_extract.py` | §57 量刑因子啟發式抽取(regex/pattern,無外部 API)|
+| `scripts/09_inspect_outliers.py` / `10_error_registry.py` | walk-forward 殘差離群 → 可累積錯誤登記(§6.3 偏誤登記)|
+| `data/processed/art57_factors.jsonl` | §57 因子(啟發式抽 1,598 件;gitignored,`art57_extract.py` 可重生)|
 | `app.py` | FastAPI 服務:`/health` / `/version` / `/predict` / `/explain`,回傳 p25-p50-p75-緩刑機率 + 法定刑度 + SHAP per-feature 拆解 + 免責聲明 |
 
 ## 安裝

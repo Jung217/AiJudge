@@ -16,7 +16,7 @@
 | 層 | 名稱 | 內容 |
 |---|---|---|
 | 1 | 資料層 | 司法院開放資料 + JSONL 快取 + 篩選結果 |
-| 2 | 特徵層 | Regex + CKIP NLP + LLM 混合抽取 |
+| 2 | 特徵層 | Regex + CKIP NLP + 啟發式 §57 因子抽取 |
 | 3 | 模型層 | 多任務分類 / 迴歸（行為、刑期、緩刑、折扣率） |
 | 4 | 約束層 | 法定刑上下限、減刑規則、刑法§51 合併定刑 |
 | 5 | 解釋與服務層 | SHAP 解釋 + FastAPI + 免責聲明 |
@@ -121,15 +121,15 @@
 | 累犯 | 刑法§47 | 條文引用（§47 + 釋憲後個案審酌語句） |
 | 自首 | 刑法§62 | 條文引用 |
 | 酌減其刑 | 刑法§59 | 條文引用 |
-| 量刑因子（十款） | 刑法§57 | **LLM 抽取**：犯罪動機、手段、品行、智識、生活狀況、損害、犯後態度 |
-| 和解 / 賠償 | — | LLM 抽取 |
+| 量刑因子（十款） | 刑法§57 | **啟發式 regex 抽取**(`art57_extract.py`)：犯罪動機、手段、品行、智識、生活狀況、損害、犯後態度 |
+| 和解 / 賠償 | — | 規劃中(尚未抽取) |
 | 戒癮狀態 | — | 施用案件限定 |
 
 ### 4.4 工具鏈
 
 - 結構化欄位：regex
 - 斷詞 / NER：CKIP Transformers
-- 量刑因子：Claude API（批次 + prompt cache）
+- 量刑因子：啟發式 regex/pattern（`art57_extract.py` → `art57_factors.jsonl`，無外部 API）
 - **人工驗證**：先標註 200 筆作為 ground truth，計算抽取準確率
 
 ## 5. 第三階段：模型建構與權重設計（4–5 週）
@@ -266,7 +266,7 @@ GitHub Pages 是靜態托管、沒有後端,所以不能直接跑 FastAPI。要�
 | 資料 | JSONL（初期）→ PostgreSQL（擴大後） |
 | ML | XGBoost / LightGBM / scikit-learn |
 | NLP | CKIP Transformers |
-| LLM | Anthropic Claude API（量刑因子抽取） |
+| §57 抽取 | 啟發式 regex/pattern（`art57_extract.py`，無外部 API）|
 | 解釋 | SHAP |
 | 服務 | FastAPI + Docker |
 | 測試 | pytest |
@@ -299,18 +299,34 @@ AiJudge/
 ├── features.py                # 特徵抽取
 ├── rules.py                   # 法定刑規則引擎
 ├── models.py                  # ML 模型
+├── app.py                     # FastAPI 服務(/predict /explain)
 ├── scripts/                   # 執行入口
-│   ├── 01_download.py         # 下載月度 ZIP
-│   ├── 02_filter.py           # 篩出基隆毒品案
-│   └── 03_explore.py          # 基礎統計
+│   ├── 00_demo.py             # 合成資料端到端 demo
+│   ├── 01_download.py         # 下載月度 RAR(server 目前 500)
+│   ├── 01b_extract_rars.py    # 並行解壓 RAR(WORKERS env var)
+│   ├── 02_filter.py           # 篩出基隆/北部 5 院毒品案
+│   ├── 03_explore.py          # 基礎統計
+│   ├── 04_train_baseline.py   # XGBoost 多 head + walk-forward CV + rule-clip
+│   ├── 05_sample_for_labeling.py  # 抽樣人工標註(--prefill)
+│   ├── 06_evaluate_labels.py  # features 對 ground-truth 評估
+│   ├── 08_build_page_buckets.py   # 產生網頁 sentence_buckets.json
+│   ├── 09_inspect_outliers.py # walk-forward 殘差 top-K 離群
+│   ├── 10_error_registry.py   # 錯誤登記(§6.3 偏誤登記)
+│   ├── art57_extract.py       # §57 量刑因子啟發式抽取(無 API)
+│   ├── art57_classify.py      # §57 因子分類(啟發式)
+│   ├── art57_extract_helper.py / art57_batch_helper.py  # dump reason 段
+│   └── prime_cookies.py       # download 用 cookie(Playwright)
 ├── data/
-│   ├── raw/                   # 原始 ZIP（.gitignore）
-│   ├── filtered/              # 基隆毒品案 JSONL
-│   └── processed/             # 特徵化後
+│   ├── raw/                   # 原始 RAR（.gitignore）
+│   ├── extracted/            # 解壓後 JSON（.gitignore）
+│   ├── filtered/              # 毒品案 JSONL（.gitignore）
+│   ├── labeling/             # 人工標註 sample（.gitignore）
+│   └── processed/             # 特徵化 + art57_factors + error_registry（.gitignore）
 └── tests/
     ├── test_filter.py
     ├── test_features.py          # n_defendants 等抽取輔助函式
-    └── test_rules.py             # 規則引擎 + 法定刑越界率 + 約束裁剪
+    ├── test_rules.py             # 規則引擎 + 法定刑越界率 + 約束裁剪
+    └── test_service.py           # FastAPI /predict /explain
 ```
 
 **命名備註**：原規劃的 `parser.py` 改為 `records.py`，因 Python 3.9 內建 `parser` 模組（雖已棄用）仍會搶先載入造成 ImportError；模組主要 export 為 `Record` dataclass 與 `iter_records*`，`records` 名稱亦屬精確。
@@ -321,7 +337,7 @@ AiJudge/
 |---|---|
 | W1–W2 | 下載完成、基隆毒品案 JSONL |
 | W3–W4 | 判決書段落拆解器、100 筆人工標註 |
-| W5–W8 | 特徵抽取器（含 LLM）、200 筆驗證 |
+| W5–W8 | 特徵抽取器（含 §57 啟發式）、200 筆驗證 |
 | W9–W12 | 基礎模型 + 規則引擎 |
 | W13–W14 | Walk-forward 驗證、SHAP 分析 |
 | W15–W16 | API + 倫理審查 |
@@ -331,7 +347,7 @@ AiJudge/
 | 風險 | 機率 | 影響 | 因應 |
 |---|---|---|---|
 | 基隆樣本不足 | 高 | 高 | 擴大至北部 5 院 |
-| LLM 抽取成本高 | 中 | 中 | 批次 + prompt cache |
+| §57 啟發式召回有限 | 中 | 中 | 高精度 regex;重罪案需補因子 |
 | 修法造成 drift | 高 | 中 | 犯罪時加權、版本分段 |
 | 資料格式變更 | 低 | 高 | parser 抽象化 |
 | 誤用倫理爭議 | 中 | 高 | 使用者範圍限縮 + 免責聲明 |
@@ -359,5 +375,13 @@ AiJudge/
    - Per-primary-behavior MAE（pooled）：施用 1.00 / 持有 1.08 / 轉讓 4.50 / 販賣 7.09 / 意圖販賣而持有 12.05 / 製造 22.07 / 運輸 28.39。重罪 MAE 大、樣本仍稀（n ≤ 47）。
    - **殘留 ~1.22% ground-truth 越界**：幾乎都是販賣/運輸重罪被判到法定最低刑以下（依法必有 §59/§17 減刑，但偵審自白以外的 §59 我們的偵測器太保守抓不到，且多被告判決中的 §17/§59 討論會被全文偵測誤算到別人身上），外加 §11 持有純質淨重加重型未建表——皆屬已知難點，需 per-defendant 範圍化的減刑偵測 + 法律專家補表。
    - 擴壓:`scripts/01b_extract_rars.py` 已支援 `WORKERS` env var 並行（ThreadPoolExecutor + 7z subprocess）;`RAR_DIR` / `OUT_DIR` / `EXTRACT_LOG` 可 env var 覆寫(讓 RAR 跟解出檔放到另一顆磁碟)。實測 12 核機 WORKERS=6 解 30 個月約 50 分鐘(序列估 4 小時)。
-4. LLM (Claude API) 抽取 §57 量刑因子（scaffold 在 `scripts/07_llm_extract_factors.py`，待 API key + 標註資料）
-5. 擴大至北部 5 地院資料 → 建立基礎模型
+4. [done] §57 量刑因子抽取改採**啟發式 regex/pattern**(`scripts/art57_extract.py` 的 `extract_factors`),產出 `data/processed/art57_factors.jsonl`(基隆 1,598 件,格式 `{jid, factors:{factor:{direction,evidence}}}`),由 `04_train_baseline._load_art57` 編成 `a57_*` 特徵。**外部 Anthropic API 路徑(舊 `07_llm_extract_factors.py`)已移除**(使用者不付費,見 [[feedback_no_anthropic_api]])。重新產生:`python scripts/art57_extract_helper.py`(dump reason) → `python scripts/art57_extract.py <reasons.jsonl> data/processed/art57_factors.jsonl`。
+5. [done] 擴大至北部 5 地院資料 → 基礎模型(見 §5.1,68,985 件、5 院聯訓,基隆 test MAE 1.79 月)。
+
+## 14. 收尾備忘(2026-06 專案定稿)
+
+- **§57 量刑因子走啟發式、不走 API**:`art57_extract.py` 是唯一抽取路徑;`art57_factors.jsonl` 在 gitignored 的 `data/processed/`,clone 後須照上面 step 4 重新產生。涵蓋以基隆 施用/持有 基本案為主,重罪召回有限。
+- **已刪除的檔案**:一次性 scratch(`_apply_labels.py`、`_batch1/3/5_*`、`_diag_art17_falsepos.py`)、Anthropic API scaffold(`07_llm_extract_factors.py` + `tests/test_art57_extractor.py`)、簡報圖表生成器(`make_ppt_charts.py`,png 已在 `docs/assets/ppt/`)。download 子系統(`fetcher.py`/`01_download.py`/`01b_extract_rars.py`/`prime_cookies.py`)**保留**——司法院 file API 目前回 500,靠瀏覽器手動下 RAR + `01b` 解壓。
+- **錯誤登記**(§6.3):`09_inspect_outliers.py`→`10_error_registry.py`→`data/processed/error_registry.csv`(gitignored)。預分類 64 數罪併罰 / 33 重罪低估 / 3 標籤雜訊,待人工填 `verdict_category`。
+- **網頁 demo**:`docs/index.md` inline `<form>`+`<script>` 走 buckets 查表(`sentence_buckets.json`)+ `rules.py` 的 JS port,非真模型/真 SHAP(見 §7.4)。`BEHAVIOR_SEVERITY` 須與 `rules.py._BEHAVIOR_SEVERITY` 同序(施用 2 > 持有 1,高度吸收低度)。
+- **產線模型**:`baseline_north5_model.pkl`(5 院);基隆-only 為備援基線。
