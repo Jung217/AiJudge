@@ -207,7 +207,17 @@
   `{base_value, predicted_raw, top_contributions: [{name, value,
   contribution_months}, ...]}`。可加法可加性:`base + Σ contrib ≈ raw`。
   服務端 `POST /explain?top=N` 暴露。
-- 誤差最大 10% 案件人工覆核，建立錯誤登記:TODO
+- [done — 工具] 誤差最大案件的錯誤登記:`scripts/09_inspect_outliers.py`
+  跑 walk-forward 抽出殘差最大的 top-K → `data/processed/outliers.csv`;
+  `scripts/10_error_registry.py` 把它轉成可累積、append-only 的錯誤登記
+  `data/processed/error_registry.csv`,並以啟發式預分類成 5 類已知難點
+  (`aggregate_51` / `missing_reduction` / `missing_feature` /
+  `rule_table_gap` / `label_or_variance`)。re-run 以 JID 為鍵保留人工
+  欄位(`verdict_category` / `action` / `reviewer` / `reviewed_date` /
+  `notes`),掉出 top-K 的舊覆核仍保留為審計軌跡。此登記同時充當 §7.3
+  治理所需之「偏誤登記」。
+- TODO — 人工覆核:逐列填 `verdict_category` 確認/推翻啟發式分類(目前
+  top 100 預分類為 64 數罪併罰 / 33 重罪低估 / 3 標籤雜訊)。
 
 ## 7. 第五階段：部署與治理（2 週）
 
@@ -238,6 +248,8 @@
 ### 7.4 GitHub Pages 上的 in-browser 互動 demo（規劃中）
 
 GitHub Pages 是靜態托管、沒有後端,所以不能直接跑 FastAPI。要在頁面上做出可填表單即時拿預測的 demo,採 **ONNX in-browser** 路線:
+
+> **現況(2026-06)**:已先用**較輕量的 buckets 路線**上線互動 demo(`docs/index.md` inline `<form>` + `<script>`)。把訓練資料依 (court, behavior, level, flag 組合) 預聚合成中位/分位數桶 `docs/assets/sentence_buckets.json`,JS 端查表即得 p25/p50/p75,並把 `rules.py` 的法定刑度表、`pickPrimaryBehavior`、`applyReductions` port 成 JS;另附「因子貢獻瀑布」(逐步條件均值,可加法)取代真實 SHAP。**這已取代下列 ONNX 路線的大半目的**(零後端、零成本、可填表即時預測皆達成),代價是給的是資料推估而非真實 XGBoost 模型輸出 / 真 SHAP。**只有當需要真模型分位數或真 SHAP 時才需補做下列 ONNX 匯出**:
 
 - **模型 export**：`onnxmltools` 把 `ModelBundle` 內 4 個 XGBoost head（p50 / p25 / p75 / 緩刑 classifier）轉成 ONNX,每檔約 0.5–2 MB,放在 `docs/assets/models/`。
 - **JS 端**：載 `onnxruntime-web`（CDN ~5 MB,首次載入有感、後續 cache）。`docs/assets/predict.js` 包:特徵 one-hot 編碼、依序跑四個 session、把 p25 / p75 加上 metadata 內的 `δ_α` 校正、最後套 `rules` 的 clip + monotonize。
@@ -332,7 +344,7 @@ AiJudge/
    - 過濾：50 基隆毒品案（KL prefix 過濾，排除 Yunlin/Shilin 洩漏）
    - 特徵：100% 刑期覆蓋（43 有期徒刑 + 7 拘役），82 件行為偵測、58 件毒品級別偵測
 2. **資料回填**：使用者以瀏覽器手動下載 RAR 至 `data/raw/`（server API 500 未修復）
-3. 人工標註 100 筆驗證特徵抽取器（已有 `scripts/05_sample_for_labeling.py` + `06_evaluate_labels.py`）
+3. [done] 人工標註 100 筆驗證特徵抽取器（`scripts/05_sample_for_labeling.py` + `06_evaluate_labels.py`）：`data/labeling/sample_100.csv` 100 筆 `gt_*` 已填齊（`gt_sentence_months` 94/100，6 件空白為拘役/無有期徒刑案，屬正常）。
    - [done] `04_train_baseline.py` 已改為 **walk-forward 時序 CV**（預設 5 fold 擴展視窗，`--holdout` 才是舊的隨機 80/20）+ 層 4 約束裁剪（預設開啟）+ 法定刑越界率報告（gt 標籤 / raw 預測 / clipped 預測三段）。
    - [done] `features.n_defendants`：偵測 主文 中被告人數；多被告判決預設排除（per-judgment 列會混到多人刑度，`--keep-multi-defendant` 可保留）。
    - [done] 數罪併罰處理：`features.n_sentence_counts` / `is_aggregate_sentence`；多罪/應執行刑的列改用 `rules.aggregate_only_constraint()`（只強制 §51 三十年上限，因為單罪刑度區間無法約束合併刑）。
